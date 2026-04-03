@@ -1,0 +1,9 @@
+/node_modules
+/vendor
+.env
+/storage/*.key
+/public/storage
+/public/hot
+/public/mix-manifest.json
+/.idea
+/.vscode
