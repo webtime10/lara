@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  app:
+    image: php:8.4-apache
+    container_name: laravel12-app
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - .:/var/www/html
+    environment:
+      APACHE_DOCUMENT_ROOT: /var/www/html/public
+    # Мы добавили установку драйвера pdo_mysql перед запуском Apache
+    command: >
+      sh -c "apt-get update && apt-get install -y libpng-dev libonig-dev libxml2-dev 
+      && docker-php-ext-install pdo_mysql mysqli
+      && sed -ri -e 's!/var/www/html!$${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
+      && sed -ri -e 's!/var/www/!$${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+      && a2enmod rewrite
+      && chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+      && apache2-foreground"
+    networks:
+      - laravel-net
+
+  mysql:
+    image: mysql:8.4
+    container_name: laravel12-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: app
+      MYSQL_USER: app
+      MYSQL_PASSWORD: app
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - laravel-net
+
+  redis:
+    image: redis:7.2
+    container_name: laravel12-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - laravel-net
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: laravel12-phpmyadmin
+    ports:
+      - "8082:80"
+    environment:
+      PMA_HOST: mysql
+    networks:
+      - laravel-net
+
+networks:
+  laravel-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
