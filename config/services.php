@@ -35,4 +35,22 @@ return [
         ],
     ],
 
+    /*
+    | Читать только через config('services.openai.*') / config('services.gemini.*').
+    | При php artisan config:cache вызовы env() вне config/ возвращают null — ключи «не находились».
+    */
+    'openai' => [
+        'key' => env('OPENAI_API_KEY'),
+        'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
+        'max_output_tokens' => (int) env('OPENAI_MAX_OUTPUT_TOKENS', 16384),
+        'ai_article_min_chars' => (int) env('OPENAI_AI_ARTICLE_MIN_CHARS', 2500),
+        'rate_limit_retries' => (int) env('OPENAI_RATE_LIMIT_RETRIES', 8),
+        'rate_limit_wait_base_sec' => (int) env('OPENAI_RATE_LIMIT_WAIT_BASE_SEC', 10),
+    ],
+
+    'gemini' => [
+        'key' => env('GEMINI_API_KEY'),
+        'model' => env('GEMINI_MODEL', 'gemini-2.5-flash'),
+    ],
+
 ];

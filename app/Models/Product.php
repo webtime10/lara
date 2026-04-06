@@ -21,6 +21,7 @@ class Product extends Model
         'author_id',
         'source_text',
         'result',
+        'ai_status',
         'status',
     ];
 

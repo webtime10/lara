@@ -1,1 +1,6 @@
 /* My Admin Custom Styles */
+.wrap-ai-status-indicator{
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+}

@@ -53,13 +53,21 @@ Route::prefix('admin')
             Route::resource('roles', RoleController::class)->except(['show']);
             Route::resource('users', UserController::class)->except(['show']);
         });
+
+        // GET /admin/products/{id}/check-ai-status?field=... — имя: admin.products.check_ai_status (префикс admin. из группы)
+        Route::get('products/{id}/check-ai-status', [ProductController::class, 'checkAiStatus'])
+            ->name('products.check_ai_status');
+
+        Route::post('products/generate-ai', [ProductController::class, 'generateAi'])->name('products.generate_ai');
+
+// тест аи подключения
         // --- ТЕСТ OpenAI (Потом удалим) ---
         Route::get('/test-ai', function () {
             // 1. Проверяем наличие ключа в .env
-            $apiKey = env('OPENAI_API_KEY');
-            
-            if (!$apiKey) {
-                return "Ошибка: Ключ OPENAI_API_KEY не найден в файле .env";
+            $apiKey = config('services.openai.key');
+
+            if (! $apiKey) {
+                return 'Ошибка: задайте OPENAI_API_KEY в .env и выполните php artisan config:clear (или config:cache после правок .env).';
             }
 
             try {
@@ -84,9 +92,9 @@ Route::prefix('admin')
         });
         // Тест Gemini (URL: /admin/check-gemini)
         Route::get('/check-gemini', function () {
-            $apiKey = env('GEMINI_API_KEY');
-            if (!$apiKey) {
-                return response('Ошибка: задайте GEMINI_API_KEY в .env', 500);
+            $apiKey = config('services.gemini.key');
+            if (! $apiKey) {
+                return response('Ошибка: задайте GEMINI_API_KEY в .env и обновите кэш конфига (config:clear / config:cache).', 500);
             }
 
             $maskKey = static fn (string $urlWithKey): string => preg_replace('/key=[^&]+/u', 'key=***', $urlWithKey);
@@ -200,6 +208,6 @@ Route::prefix('admin')
 
 
         
-        Route::post('products/generate-ai', [ProductController::class, 'generateAi'])->name('products.generate_ai');
+        
         
     });

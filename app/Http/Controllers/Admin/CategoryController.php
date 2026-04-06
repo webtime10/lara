@@ -11,10 +11,23 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
+/**
+ * Админка: CRUD категорий каталога.
+ *
+ * Модель данных:
+ * - categories — «скелет»: parent_id, sort_order, status, дерево (rebuildPaths после изменений).
+ * - category_descriptions — по одной строке на пару (category_id, language_id): name, slug, SEO-поля.
+ *
+ * Слаги уникальны в рамках language_id (не глобально по сайту). Для дефолтного языка name и slug обязательны;
+ * для остальных локалей пустая пара name+slug означает «не создавать / при update — удалить описание».
+ *
+ * OpenAiService / TranslateProductJob здесь не используются — это отдельный контур продуктов.
+ */
 class CategoryController extends Controller
 {
     use NormalizesLocalizedSlugs;
 
+    /** Список с пагинацией; подгружаются parent и descriptions для отображения имён по языкам. */
     public function index()
     {
         $pageTitle = 'Categories - Список';
@@ -27,6 +40,7 @@ class CategoryController extends Controller
         return view('admin.categories.index', compact('categories', 'pageTitle', 'defaultLanguage'));
     }
 
+    /** Форма создания: дерево родителей на языке по умолчанию + все языки из Language::forAdminForms(). */
     public function create()
     {
         $pageTitle = 'Categories - Создание';
@@ -37,6 +51,10 @@ class CategoryController extends Controller
         return view('admin.categories.create', compact('pageTitle', 'parentOptions', 'languages', 'defaultLanguage'));
     }
 
+    /**
+     * Создание: одна транзакция — Category, затем набор CategoryDescription по заполненным локалям.
+     * mergeLocalizedSlugsFromRequest: автодополнение slug из name там, где задумано трейтом.
+     */
     public function store(Request $request)
     {
         $request->merge([
@@ -83,6 +101,7 @@ class CategoryController extends Controller
 
         $request->validate($rules);
 
+        // image/top/column захардкожены — расширение под медиа/витрину делается отдельно.
         DB::transaction(function () use ($request, $languages) {
             $category = Category::create([
                 'parent_id' => $request->input('parent_id'),
@@ -97,6 +116,7 @@ class CategoryController extends Controller
                 $suffix = $language->code;
                 $name = $request->input('name_'.$suffix, '');
                 $slugInput = $request->input('slug_'.$suffix);
+                // Необязательные локали: полностью пустые пропускаем (нет строки в category_descriptions).
                 if (! $language->is_default && $name === '' && ($slugInput === null || $slugInput === '')) {
                     continue;
                 }
@@ -117,6 +137,7 @@ class CategoryController extends Controller
                 ]);
             }
 
+            // Пересчёт materialized path / порядка в дереве после вставки.
             Category::rebuildPaths();
         });
 
@@ -124,6 +145,9 @@ class CategoryController extends Controller
             ->with('success', 'Категория успешно создана');
     }
 
+    /**
+     * Редактирование: текущая категория и её потомки исключаются из списка parent_id (исключить циклы в дереве).
+     */
     public function edit(string $id)
     {
         $pageTitle = 'Categories - Редактирование';
@@ -136,6 +160,10 @@ class CategoryController extends Controller
         return view('admin.categories.edit', compact('category', 'pageTitle', 'parentOptions', 'languages', 'defaultLanguage'));
     }
 
+    /**
+     * Обновление: валидация parent_id не допускает выбор себя или любого потомка как родителя.
+     * Пустая необязательная локаль при update удаляет соответствующую CategoryDescription.
+     */
     public function update(Request $request, string $id)
     {
         $request->merge([
@@ -206,6 +234,7 @@ class CategoryController extends Controller
                 $suffix = $language->code;
                 $name = $request->input('name_'.$suffix, '');
                 $slugInput = $request->input('slug_'.$suffix);
+                // Явное «очищение» опциональной локали: удаляем запись, чтобы не хранить пустые переводы.
                 if (! $language->is_default && $name === '' && ($slugInput === null || $slugInput === '')) {
                     CategoryDescription::query()
                         ->where('category_id', $category->id)
@@ -242,6 +271,7 @@ class CategoryController extends Controller
             ->with('success', 'Категория успешно обновлена');
     }
 
+    /** Удаление модели Category (каскад на descriptions настраивается в миграциях/модели). */
     public function destroy(string $id)
     {
         $category = Category::findOrFail($id);

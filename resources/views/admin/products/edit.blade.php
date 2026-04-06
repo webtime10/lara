@@ -125,6 +125,7 @@
                                 @endphp
                                 <div class="tab-pane fade {{ $i === 0 ? 'show active' : '' }}" id="lang{{ $language->id }}">
                                     <div class="form-group">
+                                       
                                         <label for="name_{{ $c }}">Название</label>
                                         <input type="text" name="name_{{ $c }}" id="name_{{ $c }}" class="form-control" value="{{ old('name_'.$c, $desc->name ?? '') }}" {{ $language->is_default ? 'required' : '' }}>
                                     </div>
@@ -138,14 +139,26 @@
                                         <label>Описание</label>
                                         <textarea name="description_{{ $c }}" class="form-control" rows="4">{{ old('description_'.$c, $desc->description ?? '') }}</textarea>
                                     </div> -->
+                                    @foreach($aiFields as $fieldKey => $fieldLabel)
                                     <div class="form-group">
-                                        <label for="ai_text_about_the_country_{{ $c }}">Текст о стране (JSON в БД: title, text_1, text_2)</label>
-                                        <textarea name="ai_text_about_the_country_{{ $c }}" id="ai_text_about_the_country_{{ $c }}" class="form-control" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.875rem;" rows="18" spellcheck="false">{!! old('ai_text_about_the_country_'.$c, $aiCountryForForm) !!}</textarea>
+                                        <div class="wrap-ai-status-indicator d-flex align-items-center mb-2">
+                                            
+                                            <label class="mb-0 mr-2">{{ $fieldLabel }}</label>
+                                            
+                                            {{-- ВОТ ОНО! Сюда попадает ai_reviews_from_tourists или ai_text_about_the_country --}}
+                                            <a href="javascript:void(0)" class="ai-status-indicator" data-field="{{ $fieldKey }}">
+                                                <i class="fas fa-circle text-secondary"></i>
+                                            </a>
+                                
+                                        </div>
+                                
+                                        <textarea 
+                                            name="{{ $fieldKey }}_{{ $c }}" 
+                                            class="form-control" 
+                                            rows="18"
+                                        >{!! old($fieldKey.'_'.$c, $desc->{$fieldKey} ?? '') !!}</textarea>
                                     </div>
-                                    <div class="form-group">
-                                        <label for="ai_reviews_from_tourists_{{ $c }}">Отзывы туристов (JSON в БД: title, text_1, text_2)</label>
-                                        <textarea name="ai_reviews_from_tourists_{{ $c }}" id="ai_reviews_from_tourists_{{ $c }}" class="form-control" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.875rem;" rows="18" spellcheck="false">{!! old('ai_reviews_from_tourists_'.$c, $aiReviewsForForm) !!}</textarea>
-                                    </div>
+                                @endforeach
                                 </div>
                             @endforeach
                         </div>
@@ -173,11 +186,17 @@
                                 id="source_text_input" 
                                 class="form-control"
                                 rows="6"
-                                style="background:#f5f8ff;border-color:#b3c6ff;"
+                                style="background:#f5f8ff;border-color:#0644ff;"
                                 placeholder="Вставьте сюда текст со швейцарских сайтов или соцсетей..."
                             >{{ old('source_text', $product->source_text) }}</textarea>
+                            <div class="wrap-ai-status-indicator">
+                                <label for="result_textarea" class="mt-3"><span><i class="fas fa-check-circle"></i> Результат (Result)</span>
 
-                            <label for="result_textarea" class="mt-3"><i class="fas fa-check-circle"></i> Результат (Result)</label>
+                                </label>
+                                <a href="javascript:void(0)" class="ai-status-indicator" data-field="ai_reviews_from_tourists">
+                                    <i class="fas fa-circle text-secondary"></i>
+                                </a>
+                            </div>   
                             <textarea
                                 name="result"
                                 id="result_textarea"
@@ -220,10 +239,38 @@
         - на бэкенде этот запрос попадает в ProductController@generateAi,
           где создаётся job TranslateProductJob и отправляется в очередь (Redis).
     --}}
+    @php
+        $aiCheckExpectedLanguages = config('ai.generation.expected_languages', ['ru', 'en', 'he', 'ar']);
+    @endphp
     <script>
     $(function () {
         // Обработка клика по кнопке "Сгенерировать контент для всех языков"
+    
+        $('#ai_field_selector').on('change', function() {
+                    var selectedField = $(this).val();
+                    var $btn = $('#btn-generate-ai');
+                    var $loader = $('#ai-loader');
+                    
+                    // Ищем иконку индикатора для выбранного поля
+                    var $icon = $('.ai-status-indicator[data-field="' + selectedField + '"] i');
+
+                    // Если это поле сейчас в процессе (желтое) — блокируем кнопку
+                    if ($icon.hasClass('text-warning')) {
+                        $btn.prop('disabled', true);
+                        $loader.show();
+                    } else {
+                        $btn.prop('disabled', false);
+                        $loader.hide();
+                    }
+        });
+       
+       
         $('#btn-generate-ai').on('click', function () {
+
+
+  
+
+
             var sourceText = $('#source_text_input').val();
             var resultText = $('#result_textarea').val();
             var targetAiField = $('#ai_field_selector').val();
@@ -250,12 +297,29 @@
             $btn.prop('disabled', true);
             $loader.show();
 
+
+// --- ВИЗУАЛИЗАЦИЯ ЗАПУСКА ---
+        // Находим все индикаторы этого поля (во всех табах) и красим в желтый
+        var $indicators = $('.ai-status-indicator[data-field="' + targetAiField + '"] i');
+        $indicators.removeClass('text-secondary text-success text-danger').addClass('text-warning');
+
+        // Блокируем кнопку и показываем лоадер
+        $btn.prop('disabled', true);
+        $loader.show();
+
+
+
+
             // AJAX‑запрос к маршруту admin.products.generate_ai (см. web.php и ProductController@generateAi)
             $.ajax({
-                url: "{{ route('admin.products.generate_ai') }}",
+               /*-- Относительный путь: POST уходит на тот же хост и схему (http/https), что и страница.
+                     Иначе при APP_URL=https, а вход по http, route() даст https — cookie сессии не уйдёт → Unauthenticated. */
+                url: "{{ route('admin.products.generate_ai', [], false) }}",
                 method: 'POST',
                 headers: {
-                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
                 },
                 data: {
                     product_id: {{ $product->id }},
@@ -266,28 +330,86 @@
             })
                 // УСПЕШНЫЙ ОТВЕТ СЕРВЕРА (HTTP 200, без ошибок в контроллере)
                 .done(function (data) {
-                    // data — это JSON, который вернул контроллер ProductController@generateAi.
-                    // Там сейчас возвращается: { "message": "Перевод запущен в фоне" }.
-                    // Если message есть — показываем его, иначе используем запасной текст.
-                    alert(data.message || 'Перевод запущен в фоне. Обновите страницу позже и нажмите "Сохранить".');
-                })
+    alert(data.message || 'Процесс запущен в фоне');
+    
+    // Ссылка на проверку (маршрут, который ты добавил в web.php)
+    var checkUrl = "{{ route('admin.products.check_ai_status', $product->id, false) }}";
+    
+    // Опрос: зелёный только если в БД появился новый контент (поле перед job очищено на сервере).
+    var pollAttempts = 0;
+    var maxPollAttempts = 120; // 120 × 5 с ≈ 10 мин
+    var pollTimer = setInterval(function () {
+        pollAttempts += 1;
+        if (pollAttempts > maxPollAttempts) {
+            clearInterval(pollTimer);
+            $('.ai-status-indicator[data-field="' + targetAiField + '"] i')
+                .removeClass('text-warning text-success')
+                .addClass('text-danger');
+            alert('Генерация не завершилась за отведённое время. Проверьте логи (очередь, OPENAI_API_KEY / php artisan config:clear).');
+            $('#btn-generate-ai').prop('disabled', false);
+            $('#ai-loader').hide();
+            return;
+        }
+        $.ajax({
+            url: checkUrl,
+            method: 'GET',
+            data: {
+                field: targetAiField,
+                languages: @json($aiCheckExpectedLanguages)
+            },
+            dataType: 'json',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json'
+            },
+            success: function (res) {
+                if (res && res.status === 'error') {
+                    clearInterval(pollTimer);
+                    $('.ai-status-indicator[data-field="' + targetAiField + '"] i')
+                        .removeClass('text-warning text-success')
+                        .addClass('text-danger');
+                    var hint = (res.missing_languages && res.missing_languages.length)
+                        ? '\nНе хватает языков: ' + res.missing_languages.join(', ')
+                        : '';
+                    alert('Ошибка генерации или таймаут. См. laravel.log и failed_jobs.' + hint);
+                    $('#btn-generate-ai').prop('disabled', false);
+                    $('#ai-loader').hide();
+                    return;
+                }
+                if (res && res.is_ready === true && res.status === 'success') {
+                    $('.ai-status-indicator[data-field="' + targetAiField + '"] i')
+                        .removeClass('text-warning text-danger')
+                        .addClass('text-success');
+                    $('#btn-generate-ai').prop('disabled', false);
+                    $('#ai-loader').hide();
+                    clearInterval(pollTimer);
+                }
+            },
+            error: function (xhr) {
+                clearInterval(pollTimer);
+                $('.ai-status-indicator[data-field="' + targetAiField + '"] i')
+                    .removeClass('text-warning text-success')
+                    .addClass('text-danger');
+                alert('Ошибка проверки статуса: ' + xhr.status);
+                $('#btn-generate-ai').prop('disabled', false);
+                $('#ai-loader').hide();
+            }
+        });
+    }, 5000); // 5 секунд — оптимально для Одесского интернета
+})
                 // ОТВЕТ С ОШИБКОЙ (например, валидация, 500, проблемы с Redis/OpenAI и т.п.)
                 .fail(function (xhr) {
-                    // xhr.responseJSON.message — стандартное поле message из JSON‑ответа Laravel при ошибке.
-                    // Если оно есть — показываем его, если нет — выводим общий текст про ошибку сервера/лимиты.
+                    $indicators.removeClass('text-warning').addClass('text-danger');
                     var msg = (xhr.responseJSON && xhr.responseJSON.message)
                         ? xhr.responseJSON.message
                         : 'Ошибка сервера или лимиты API';
                     alert('Произошла ошибка: ' + msg);
-                })
-                // ВСЕГДА ВЫПОЛНЯЕТСЯ В КОНЦЕ, НЕЗАВИСИМО ОТ УСПЕХА/ОШИБКИ
-                .always(function () {
-                    // Возвращаем кнопку в рабочее состояние и прячем индикатор загрузки.
                     $btn.prop('disabled', false);
                     $loader.hide();
                 });
         });
     });
+    
     </script>
     @include('admin.partials.slug-auto-sync')
 @endsection

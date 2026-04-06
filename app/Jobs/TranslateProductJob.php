@@ -11,31 +11,26 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use OpenAI\Exceptions\RateLimitException;
 
-/**
- * Фоновая задача: берёт базовый текст (обычно products.result), строит JSON-переводы
- * по языкам ru/en/he/ar и пишет в выбранное ai_* поле таблицы product_descriptions.
- */
 class TranslateProductJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public Product $product;
-
     public string $sourceText;
-
-    /** Например: ai_text_about_the_country или ai_reviews_from_tourists. */
     public string $targetField;
 
+    // Даем воркеру 10 минут на раздумья, ИИ парень не быстрый
     public $timeout = 600;
 
-    /** Повтор job при лимитах OpenAI или сбоях сети (вся генерация заново). */
+    // Если всё упало, пробуем еще 3 раза. Настырность — наше всё.
     public int $tries = 3;
 
-    /** Секунды между попытками всего job. */
+    // Если OpenAI капризничает, возвращаемся через 1.5, 3 или 5 минут
     public array $backoff = [90, 180, 300];
 
     public function __construct(Product $product, string $sourceText, string $targetField)
@@ -48,88 +43,68 @@ class TranslateProductJob implements ShouldQueue
     public function handle(): void
     {
         $productId = $this->product->id;
+        // Уникальный маячок для логов, чтобы не запутаться в пачке запусков
         $runId = substr((string) microtime(true), -8);
 
-        Log::info('[TranslateProductJob] Старт', [
+        Log::info('[TranslateProductJob] Погнали!', [
             'run_id' => $runId,
             'product_id' => $productId,
             'target_field' => $this->targetField,
-            'source_len' => mb_strlen($this->sourceText),
         ]);
 
         try {
             $service = app(OpenAiService::class);
-            $translated = $service->generateTranslationsForField($this->sourceText, $this->targetField);
+            // Отдаем текст "мастеру" на генерацию и ждем готовую пачку статей
+            $generatedContent = $service->generateTranslationsForField($this->sourceText, $this->targetField);
         } catch (RateLimitException $e) {
+            // Если у OpenAI очередь на входе, вежливо отступаем и пробуем позже
             $sec = (int) $e->response->getHeaderLine('Retry-After');
-            if ($sec < 15) {
-                $sec = (int) env('OPENAI_JOB_RELEASE_SEC', 90);
-            }
-            $sec = max(15, min(600, $sec));
+            $sec = max(15, min(600, $sec ?: 90));
 
-            Log::warning('[TranslateProductJob] OpenAI 429, откладываю задачу', [
-                'run_id' => $runId,
-                'product_id' => $productId,
-                'release_in_sec' => $sec,
-            ]);
+            Log::warning('[TranslateProductJob] OpenAI перегружен, ждем...', ['run_id' => $runId, 'sec' => $sec]);
             $this->release($sec);
+            return;
+        }
+
+        if ($generatedContent === null) {
+            Log::warning('[TranslateProductJob] ИИ выдал пустоту. Отмена.', ['run_id' => $runId]);
+            $this->markGenerationFailed('ИИ не вернул данные (OpenAI/Gemini или пустой ответ).');
 
             return;
         }
 
-        if ($translated === null) {
-            Log::warning('[TranslateProductJob] Пустой или невалидный ответ AI', [
-                'run_id' => $runId,
-                'product_id' => $productId,
-                'target_field' => $this->targetField,
-            ]);
-
-            return;
-        }
-
-        // Сохраняем буфер результата в products.result, чтобы текст был виден в textarea "Result".
-        $resultBuffer = $translated['ru'] ?? reset($translated);
+        // Обновляем "витрину" (главное поле товара) — берем русский текст как эталон
+        $resultBuffer = $generatedContent['ru'] ?? reset($generatedContent);
         if (is_string($resultBuffer) && trim($resultBuffer) !== '') {
-            Product::query()->whereKey($productId)->update([
-                'result' => $resultBuffer,
-            ]);
-            Log::info('[TranslateProductJob] Обновлён products.result', [
-                'run_id' => $runId,
-                'product_id' => $productId,
-                'result_len' => mb_strlen($resultBuffer),
-            ]);
+            Product::query()->whereKey($productId)->update(['result' => $resultBuffer]);
+            Log::info('[TranslateProductJob] Главное поле Result заполнено', ['run_id' => $runId]);
         }
-
-        Log::info('[TranslateProductJob] Получен ответ от сервиса', [
-            'run_id' => $runId,
-            'languages' => implode(',', array_keys($translated)),
-        ]);
 
         $languages = Language::all();
         $updated = [];
         $skipped = [];
+
+        // Теперь раскладываем готовую работу по всем языковым папкам
         foreach ($languages as $language) {
             $existing = ProductDescription::query()
                 ->where('product_id', $productId)
                 ->where('language_id', $language->id)
                 ->first();
 
-            $slug = $existing?->slug;
-            if (! $slug) {
-                $slug = Str::slug($this->product->model.'-'.$language->code);
-            }
+            // Если у страницы еще нет адреса (slug) — создаем его на лету
+            $slug = $existing?->slug ?? Str::slug($this->product->model . '-' . $language->code);
 
-            $textForLang = $translated[$language->code] ?? null;
-            if (! is_string($textForLang) || trim($textForLang) === '') {
+            // Ищем в ответе ИИ текст именно для этого языка
+            $textForLang = $generatedContent[$language->code] ?? null;
+
+            if (!$textForLang) {
                 $skipped[] = $language->code;
                 continue;
             }
 
+            // Умная запись: если перевод уже был — обновим, если нет — создадим с нуля
             ProductDescription::updateOrCreate(
-                [
-                    'product_id' => $productId,
-                    'language_id' => $language->id,
-                ],
+                ['product_id' => $productId, 'language_id' => $language->id],
                 [
                     'name' => $existing?->name ?? $this->product->model,
                     'slug' => $slug,
@@ -137,21 +112,39 @@ class TranslateProductJob implements ShouldQueue
                 ]
             );
             $updated[] = $language->code;
-            Log::info('[TranslateProductJob] Язык обновлен', [
-                'run_id' => $runId,
-                'product_id' => $productId,
-                'lang' => $language->code,
-                'payload_len' => mb_strlen($textForLang),
-            ]);
         }
 
-        Log::info('[TranslateProductJob] Готово', [
+        $expectedCodes = array_map('strtolower', config('ai.generation.expected_languages', ['ru', 'en', 'he', 'ar']));
+        $skippedCritical = array_values(array_intersect(array_map('strtolower', $skipped), $expectedCodes));
+
+        if ($skippedCritical !== []) {
+            $msg = 'Не удалось сгенерировать языки: '.implode(', ', $skippedCritical).'. Проверьте ключи API (Gemini/OpenAI) и laravel.log.';
+            Log::warning('[TranslateProductJob] Неполный результат по обязательным языкам', [
+                'run_id' => $runId,
+                'skipped_critical' => $skippedCritical,
+                'skipped_all' => $skipped,
+                'updated' => $updated,
+            ]);
+            $this->markGenerationFailed($msg);
+
+            return;
+        }
+
+        Log::info('[TranslateProductJob] Финиш! Всё по полкам.', [
             'run_id' => $runId,
-            'product_id' => $productId,
-            'target_field' => $this->targetField,
-            'languages_count' => count($translated),
             'updated' => $updated,
             'skipped' => $skipped,
         ]);
+    }
+
+    public function failed(?\Throwable $exception = null): void
+    {
+        $this->markGenerationFailed($exception !== null ? $exception->getMessage() : 'Задача очереди завершилась с ошибкой.');
+    }
+
+    private function markGenerationFailed(string $detail): void
+    {
+        $key = 'product_ai_generation_error:'.$this->product->id.':'.$this->targetField;
+        Cache::put($key, $detail, 86400);
     }
 }
