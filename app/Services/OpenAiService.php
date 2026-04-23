@@ -2,546 +2,228 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use OpenAI;
+use OpenAI\Client;
+use OpenAI\Exceptions\ErrorException;
 use OpenAI\Exceptions\RateLimitException;
 use Throwable;
 
 /**
- * Сервис для двухшаговой генерации многоязычного контента через Chat Completions API.
- *
- * Контекст использования: продукты (TranslateProductJob) и аналогичные поля вида ai_* в БД.
- * Поддерживаемые языки жёстко зашиты: ru, en, he, ar.
- *
- * Пайплайн:
- * - Шаг 1 (OpenAI): язык источника + структура { title, text_1, text_2 } на языке оригинала.
- * - Шаг 2 (OpenAI): только ru↔en (для исхода he/ar — получаем en); без JSON для he/ar.
- * - Шаг 3 (Gemini): he и ar plain-text (заголовок отдельно; text_1+text_2 с маркером ---PART---).
- *
- * Параметры из .env подхватываются через config/services.php (ключи services.openai / services.gemini).
- *
- * Шаг 2 OpenAI: только пара ru↔en (для исхода he/ar — догоняем en). Шаг 3 Gemini: he и ar plain-text.
+ * Запросы к OpenAI: промпт + сырьё → ответ (см. AiFieldGeneratorJob).
+ * Поддерживается несколько ключей (OPENAI_API_KEY + OPENAI_API_KEYS); при 401/403 пробуется следующий.
  */
 class OpenAiService
 {
-    protected $client;
-
-    private const GEMINI_PART_SEPARATOR = "\n---PART---\n";
-
-    /** База REST Gemini (со слешем на конце — дальше без двойных //). */
-    private const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/';
-
-    /** Системное сообщение: заставляет модель отвечать только JSON (совместимо с response_format json_object). */
-    private const SYSTEM_JSON_API = 'Ты — API. Возвращай только валидный JSON без пояснений.';
-
-    public function __construct()
-    {
-        $this->client = OpenAI::client((string) config('services.openai.key'));
-    }
-
     /**
-     * Главная точка входа для фоновых задач перевода/генерации статей по полю продукта.
-     *
-     * @param  string  $rawText  Сырой текст (например из products.result или textarea админки).
-     * @param  string  $targetField  Имя поля в логике промпта: влияет на стиль (статья vs «отзывы туристов»).
-     *                               См. сравнение с 'ai_reviews_from_tourists' в build*Prompt.
-     * @return array<string, string>|null  Карта code языка → JSON-строка для колонки в БД
-     *                                    (внутри: title, text_1, text_2). null при ошибке/пустом вводе.
+     * @deprecated Используйте collectApiKeys(); оставлено для совместимости.
      */
-    public function generateTranslationsForField(string $rawText, string $targetField): ?array
+    public function getRandomKey(): string
     {
-        $rawText = trim($rawText);
-        if ($rawText === '') {
-            return null;
-        }
+        $keys = $this->collectApiKeys();
 
-        Log::info('[ConfigCheck] Model: '.(config('services.gemini.model') ?? 'null').' | MinChars: '.(config('services.openai.ai_article_min_chars') ?? 'null'));
-
-        $model = (string) config('services.openai.model', 'gpt-4o-mini');
-        $maxOut = (int) config('services.openai.max_output_tokens', 16384);
-        $minChars = (int) config('services.openai.ai_article_min_chars', 2500);
-
-        Log::info('[OpenAiService] Step 1/2 detect + structure source', [
-            'target_field' => $targetField,
-            'target_chars_hint' => $minChars,
-            'source_len' => mb_strlen($rawText),
-        ]);
-
-        $step1Prompt = $this->buildDetectAndStructurePrompt($targetField, $minChars)."\n\nSOURCE TEXT:\n".$rawText;
-        $step1Payload = [
-            'model' => $model,
-            'max_tokens' => $maxOut,
-            'messages' => [
-                ['role' => 'system', 'content' => self::SYSTEM_JSON_API],
-                ['role' => 'user', 'content' => $step1Prompt],
-            ],
-            'response_format' => ['type' => 'json_object'],
-        ];
-
-        Log::info('[OpenAiService] Step 1 request sent', [
-            'target_field' => $targetField,
-            'max_tokens' => $maxOut,
-        ]);
-        $step1 = $this->createChatCompletionWithRateLimitRetry($step1Payload, 'step1', $targetField);
-        if ($step1 === null) {
-            Log::error('[OpenAiService] Step 1 failed: no response', ['target_field' => $targetField]);
-            return null;
-        }
-
-        $this->logCompletionUsage($step1);
-        // finish_reason === 'length' значит ответ обрезан — JSON может быть битым; предупреждение в лог.
-        $this->logIfTruncated($step1, 'step1');
-
-        $structured = $this->parseStructuredSource($step1->choices[0]->message->content ?? null);
-        if ($structured === null) {
-            Log::error('[OpenAiService] Step 1 failed: parseStructuredSource returned null', ['target_field' => $targetField]);
-            return null;
-        }
-
-        $sourceLang = $structured['source_lang'];
-        $baseArticle = [
-            'title' => $structured['title'],
-            'text_1' => $structured['text_1'],
-            'text_2' => $structured['text_2'],
-        ];
-        // Если модель «схалтурила» с длиной или сильно перекосила части — отбрасываем весь прогон.
-        if (! $this->validateArticleSizeAndSplit($baseArticle, $minChars, 'source')) {
-            return null;
-        }
-        Log::info('[OpenAiService] Step 1 parsed', [
-            'source_lang' => $sourceLang,
-            'title_len' => mb_strlen($baseArticle['title']),
-            'text_1_len' => mb_strlen($baseArticle['text_1']),
-            'text_2_len' => mb_strlen($baseArticle['text_2']),
-        ]);
-
-        $byLang = [$sourceLang => $baseArticle];
-
-        // Шаг 2 (OpenAI): только ru↔en; для исходного he/ar дополнительно получаем en (без he/ar в JSON).
-        $openAiTargets = $this->openAiTranslationTargets($sourceLang);
-        if ($openAiTargets === []) {
-            Log::info('[OpenAiService] Step 2 OpenAI пропущен (нет целей для пары ru/en).', ['source_lang' => $sourceLang]);
-        } else {
-            Log::info('[OpenAiService] Step 2 OpenAI (только ru/en, без he/ar)', [
-                'source_lang' => $sourceLang,
-                'open_ai_targets' => implode(',', $openAiTargets),
-            ]);
-
-            $step2Prompt = $this->buildTranslateFromStructuredPrompt($targetField, $sourceLang, $openAiTargets, $minChars);
-            $step2Payload = [
-                'model' => $model,
-                'max_tokens' => $maxOut,
-                'messages' => [
-                    ['role' => 'system', 'content' => self::SYSTEM_JSON_API],
-                    ['role' => 'user', 'content' => $step2Prompt."\n\nSOURCE_ARTICLE_JSON:\n".json_encode($baseArticle, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)],
-                ],
-                'response_format' => ['type' => 'json_object'],
-            ];
-
-            Log::info('[OpenAiService] Step 2 request sent', [
-                'source_lang' => $sourceLang,
-                'targets' => implode(',', $openAiTargets),
-                'max_tokens' => $maxOut,
-            ]);
-            $step2 = $this->createChatCompletionWithRateLimitRetry($step2Payload, 'step2', $targetField);
-
-            if ($step2 !== null) {
-                $this->logCompletionUsage($step2);
-                $this->logIfTruncated($step2, 'step2');
-                $translated = $this->parseTranslationsJson($step2->choices[0]->message->content ?? null);
-                if (is_array($translated)) {
-                    Log::info('[OpenAiService] Step 2 parsed translations', [
-                        'languages' => implode(',', array_keys($translated)),
-                    ]);
-                    foreach ($openAiTargets as $lang) {
-                        if (! isset($translated[$lang])) {
-                            continue;
-                        }
-                        if (! $this->validateArticleSizeAndSplit($translated[$lang], $minChars, $lang)) {
-                            Log::warning('[OpenAiService] translation skipped due to size/split check', ['lang' => $lang]);
-                            continue;
-                        }
-                        $byLang[$lang] = $translated[$lang];
-                    }
-                }
-            } else {
-                Log::warning('[OpenAiService] Step 2 failed: no response', ['target_field' => $targetField]);
-            }
-        }
-
-        // Шаг 3 (Gemini): he и ar — plain text, отдельно заголовок и объединённое тело (с разбором PART).
-        foreach (['he', 'ar'] as $rtlCode) {
-            if ($rtlCode === $sourceLang) {
-                continue;
-            }
-            Log::info("[Gemini] Начинаю перевод на {$rtlCode}...");
-            $rtlArticle = $this->translateArticleWithGemini($baseArticle, $rtlCode);
-            if ($rtlArticle === null) {
-                Log::warning('[OpenAiService] Gemini: язык пропущен (API или разбор текста)', ['lang' => $rtlCode]);
-                continue;
-            }
-            if (! $this->validateArticleSizeAndSplit($rtlArticle, $minChars, $rtlCode, $baseArticle)) {
-                Log::warning('[OpenAiService] Gemini RTL: не прошла валидация', ['lang' => $rtlCode]);
-                continue;
-            }
-            $byLang[$rtlCode] = $rtlArticle;
-            Log::info("[Gemini] Перевод на {$rtlCode} получен и прошел валидацию.");
-        }
-
-        Log::info('[OpenAiService] Final language set', [
-            'languages' => implode(',', array_keys($byLang)),
-            'expected_all' => 'ru,en,he,ar',
-        ]);
-        // Каждое значение — отдельная JSON-строка для записи в LONGTEXT колонку product_descriptions.
-        return $this->packLanguagesForDb($byLang);
+        return $keys === [] ? '' : (string) $keys[array_rand($keys)];
     }
 
     /**
-     * Промпт шага 1: детект языка + нормализация в три блока на языке оригинала.
-     */
-    private function buildDetectAndStructurePrompt(string $targetField, int $minChars): string
-    {
-        $modeHint = $targetField === 'ai_reviews_from_tourists'
-            ? 'Нейтральный информативный текст без вымышленных личных отзывов.'
-            : 'Информативная статья по материалу.';
-
-        return <<<PROMPT
-Сделай один структурированный текст из SOURCE TEXT.
-
-Задача:
-1) Определи язык SOURCE TEXT: строго один из ru, en, he, ar.
-2) Подготовь статью на ТОМ ЖЕ языке (без перевода) в 3 полях:
-   - title
-   - text_1
-   - text_2
-{$modeHint}
-Жесткое правило длины: text_1 + text_2 не меньше {$minChars} символов.
-Разделение: text_1 и text_2 должны быть примерно пополам (плюс/минус около 20%).
-
-Ответ JSON:
-{
-  "source_lang": "ru|en|he|ar",
-  "title": "...",
-  "text_1": "...",
-  "text_2": "..."
-}
-PROMPT;
-    }
-
-    /**
-     * Промпт шага 2: мультиязычный перевод уже структурированного JSON (без повторного определения языка).
-     */
-    private function buildTranslateFromStructuredPrompt(string $targetField, string $sourceLang, array $targets, int $minChars): string
-    {
-        $modeHint = $targetField === 'ai_reviews_from_tourists'
-            ? 'Стиль нейтральный, без личных отзывов.'
-            : 'Стиль туристической справочной статьи.';
-        $targetsCsv = implode(', ', $targets);
-
-        return <<<PROMPT
-SOURCE_ARTICLE_JSON уже структурирован на языке {$sourceLang}.
-Переведи его на целевые языки: {$targetsCsv}.
-{$modeHint}
-Сохраняй структуру полей и HTML.
-Соблюдай длину: text_1 + text_2 >= {$minChars}, и дели примерно пополам (плюс/минус 20%).
-
-Ответ JSON:
-{
-  "translations": {
-    "<lang>": {"title":"...","text_1":"...","text_2":"..."}
-  }
-}
-Где <lang> только из списка: {$targetsCsv}.
-PROMPT;
-    }
-
-    /** Разбор ответа шага 1; жёсткая проверка source_lang против белого списка. */
-    private function parseStructuredSource(?string $json): ?array
-    {
-        $data = json_decode($json ?? '', true);
-        if (! is_array($data)) {
-            Log::error('[OpenAiService] step1 invalid json', ['json' => $json]);
-            return null;
-        }
-        $lang = $data['source_lang'] ?? null;
-        if (! in_array($lang, ['ru', 'en', 'he', 'ar'], true)) {
-            Log::error('[OpenAiService] step1 invalid source_lang', ['json' => $json]);
-            return null;
-        }
-        return [
-            'source_lang' => $lang,
-            'title' => trim((string) ($data['title'] ?? '')),
-            'text_1' => trim((string) ($data['text_1'] ?? '')),
-            'text_2' => trim((string) ($data['text_2'] ?? '')),
-        ];
-    }
-
-    /** Разбор ответа шага 2: ожидается обёртка { "translations": { "en": {...}, ... } }. */
-    private function parseTranslationsJson(?string $json): ?array
-    {
-        $decoded = json_decode($json ?? '', true);
-        if (! is_array($decoded) || ! isset($decoded['translations']) || ! is_array($decoded['translations'])) {
-            Log::error('[OpenAiService] step2 invalid translations json', ['json' => $json]);
-            return null;
-        }
-        $out = [];
-        foreach (['ru', 'en', 'he', 'ar'] as $lang) {
-            $row = $decoded['translations'][$lang] ?? null;
-            if (! is_array($row)) {
-                continue;
-            }
-            $out[$lang] = [
-                'title' => trim((string) ($row['title'] ?? '')),
-                'text_1' => trim((string) ($row['text_1'] ?? '')),
-                'text_2' => trim((string) ($row['text_2'] ?? '')),
-            ];
-        }
-        return $out;
-    }
-
-    /**
-     * Бизнес-правило качества: суммарная длина и баланс частей.
-     * Для he/ar при $referenceArticle — мягче: длина относительно оригинала ±40%, баланс 10–90%.
-     *
-     * @param  array{title?:string,text_1:string,text_2:string}  $article
-     * @param  array{title?:string,text_1:string,text_2:string}|null  $referenceArticle  оригинал (base) для RTL
-     */
-    private function validateArticleSizeAndSplit(array $article, int $minChars, string $lang, ?array $referenceArticle = null): bool
-    {
-        $l1 = mb_strlen((string) ($article['text_1'] ?? ''));
-        $l2 = mb_strlen((string) ($article['text_2'] ?? ''));
-        $sum = $l1 + $l2;
-
-        $isRtl = ($lang === 'he' || $lang === 'ar') && $referenceArticle !== null;
-        if ($isRtl) {
-            $refL1 = mb_strlen((string) ($referenceArticle['text_1'] ?? ''));
-            $refL2 = mb_strlen((string) ($referenceArticle['text_2'] ?? ''));
-            $refSum = $refL1 + $refL2;
-            if ($refSum > 0) {
-                $low = $refSum * 0.6;
-                $high = $refSum * 1.4;
-                if ($sum < $low || $sum > $high) {
-                    Log::warning('[OpenAiService] RTL article length vs reference out of ±40%', [
-                        'lang' => $lang,
-                        'sum' => $sum,
-                        'ref_sum' => $refSum,
-                        'allowed' => [$low, $high],
-                    ]);
-
-                    return false;
-                }
-            } elseif ($sum < $minChars) {
-                Log::warning('[OpenAiService] RTL article too short (no ref sum)', [
-                    'lang' => $lang,
-                    'sum' => $sum,
-                    'required_min' => $minChars,
-                ]);
-
-                return false;
-            }
-            $ratio = $sum > 0 ? $l1 / $sum : 0.0;
-            if ($ratio < 0.10 || $ratio > 0.90) {
-                Log::warning('[OpenAiService] RTL article split is not balanced', [
-                    'lang' => $lang,
-                    'text_1_len' => $l1,
-                    'text_2_len' => $l2,
-                    'ratio_text_1' => $ratio,
-                    'expected_range' => '0.10..0.90',
-                ]);
-
-                return false;
-            }
-
-            return true;
-        }
-
-        if ($sum < $minChars) {
-            Log::warning('[OpenAiService] article too short', [
-                'lang' => $lang,
-                'text_1_len' => $l1,
-                'text_2_len' => $l2,
-                'sum' => $sum,
-                'required_min' => $minChars,
-            ]);
-
-            return false;
-        }
-        $ratio = $sum > 0 ? $l1 / $sum : 0.0;
-        if ($ratio < 0.30 || $ratio > 0.70) {
-            Log::warning('[OpenAiService] article split is not balanced', [
-                'lang' => $lang,
-                'text_1_len' => $l1,
-                'text_2_len' => $l2,
-                'ratio_text_1' => $ratio,
-                'expected_range' => '0.30..0.70',
-            ]);
-
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * OpenAI шаг 2: только «латинница» ru↔en; для he/ar исходника — добираем en (he/ar в JSON не просим).
+     * Уникальные ключи: сначала `services.openai.key`, затем из `keys_csv`.
      *
      * @return list<string>
      */
-    private function openAiTranslationTargets(string $sourceLang): array
+    public function collectApiKeys(): array
     {
-        return match ($sourceLang) {
-            'ru' => ['en'],
-            'en' => ['ru'],
-            'he', 'ar' => ['en'],
-            default => ['en'],
+        $seen = [];
+        $out = [];
+        $push = function (string $k) use (&$seen, &$out): void {
+            $k = trim($k, " \t\n\r\0\x0B\"'");
+            if ($k === '' || isset($seen[$k])) {
+                return;
+            }
+            $seen[$k] = true;
+            $out[] = $k;
         };
+
+        $push((string) config('services.openai.key', ''));
+        $csv = (string) config('services.openai.keys_csv', '');
+        foreach (explode(',', $csv) as $part) {
+            $push(trim($part));
+        }
+
+        return $out;
     }
 
-    /**
-     * Полный перевод статьи на he/ar через Gemini (заголовок отдельно; text_1+text_2 одним запросом с разделителем).
-     *
-     * @param  array{title:string,text_1:string,text_2:string}  $baseArticle
-     * @return array{title:string,text_1:string,text_2:string}|null
-     */
-    private function translateArticleWithGemini(array $baseArticle, string $rtlCode): ?array
+    public function askOpenAi(string $prompt, string $sourceText, string $logCallSite = 'askOpenAi'): ?string
     {
-        $targetLang = $rtlCode === 'he' ? 'Hebrew' : 'Arabic';
+        $prompt = trim($prompt);
+        $sourceText = trim($sourceText);
 
-        $titleOut = $this->callGeminiApi((string) $baseArticle['title'], $targetLang, $rtlCode);
-        if ($titleOut === null || trim($titleOut) === '') {
-            return null;
-        }
-
-        $bodyIn =
-            'The input has TWO sections separated by a single line containing exactly ---PART--- (three hyphens, word PART, three hyphens). '
-            ."Translate BOTH sections to {$targetLang}. In your output, put exactly the same ---PART--- line between the translated first and second section. No commentary before or after.\n\n"
-            .trim((string) $baseArticle['text_1'])
-            .self::GEMINI_PART_SEPARATOR
-            .trim((string) $baseArticle['text_2']);
-
-        $bodyOut = $this->callGeminiApi($bodyIn, $targetLang, $rtlCode);
-        if ($bodyOut === null || trim($bodyOut) === '') {
-            return null;
-        }
-
-        $split = preg_split('/\R?---PART---\R?/u', $bodyOut, 2);
-        if ($split === false || count($split) < 2) {
-            Log::warning('[OpenAiService] Gemini body: не удалось разрезать по ---PART---', ['lang' => $rtlCode]);
+        if ($prompt === '' || $sourceText === '') {
+            Log::warning('[OpenAiService] askOpenAi: empty prompt or source text');
 
             return null;
         }
 
-        return [
-            'title' => trim($titleOut),
-            'text_1' => trim((string) ($split[0] ?? '')),
-            'text_2' => trim((string) ($split[1] ?? '')),
+        $this->logPipelineMaterial($logCallSite, $prompt, $sourceText);
+
+        $model = (string) config('services.openai.model', 'gpt-4o-mini');
+        $maxOut = (int) config('services.openai.max_output_tokens', 16384);
+        $userContent = $prompt."\n\n--- SOURCE TEXT ---\n".$sourceText;
+
+        $payload = [
+            'model' => $model,
+            'max_tokens' => $maxOut,
+            'messages' => [
+                [
+                    'role' => 'system',
+                    'content' => 'Следуй инструкциям пользователя точно. Возвращай только запрошенный результат, без пояснений «как модель», если явно не просят обратное.',
+                ],
+                ['role' => 'user', 'content' => $userContent],
+            ],
         ];
-    }
 
-    /**
-     * ID модели для сегмента .../models/{id}:generateContent — без префикса models/, слешей и кавычек (без двойных // в URL).
-     */
-    private function sanitizeGeminiModelId(string $raw): string
-    {
-        $s = trim($raw);
-        $s = trim($s, " \t\n\r\0\x0B\"'");
-        $s = trim($s, '/');
-        if (str_starts_with($s, 'models/')) {
-            $s = substr($s, strlen('models/'));
-        }
-        $s = trim($s, '/');
-        $s = preg_replace('#/+#', '/', $s) ?? $s;
-        $s = trim($s, '/');
+        Log::info('[OpenAiService] askOpenAi request', [
+            'model' => $model,
+            'max_tokens' => $maxOut,
+            'prompt_len' => mb_strlen($prompt),
+            'source_len' => mb_strlen($sourceText),
+            'keys_available' => count($this->collectApiKeys()),
+        ]);
 
-        return $s;
-    }
-
-    /**
-     * Прямой HTTP-запрос к Gemini generateContent (без JSON от модели — только текст).
-     * URL: {GEMINI_API_BASE}models/{$model}:generateContent?key={$key}
-     */
-    public function callGeminiApi(string $text, string $targetLang, string $lang): ?string
-    {
-        $key = config('services.gemini.key');
-        if ($key === null || $key === '') {
-            Log::error('[Gemini] Ошибка перевода на '.$lang.': GEMINI_API_KEY не задан');
-
+        $response = $this->chatWithKeyRotation($payload, 'askOpenAi');
+        if ($response === null) {
             return null;
         }
-        $key = trim((string) $key, " \t\n\r\0\x0B\"'");
 
-        $model = $this->sanitizeGeminiModelId((string) config('services.gemini.model', 'gemini-2.5-flash'));
-        if ($model === '') {
-            Log::error('[Gemini] Ошибка перевода на '.$lang.': GEMINI_MODEL после нормализации пустой');
+        $this->logCompletionUsage($response);
+        $this->logIfTruncated($response, 'askOpenAi');
+
+        $content = $response->choices[0]->message->content ?? null;
+        if (! is_string($content)) {
+            Log::error('[OpenAiService] askOpenAi: no text in response');
 
             return null;
         }
 
-        $path = 'models/'.$model.':generateContent';
-        $base = self::GEMINI_API_BASE;
-        $urlWithoutKey = $base.$path;
-        Log::info('[Gemini] Запрос к API: '.$urlWithoutKey);
+        $content = trim($content);
 
-        $url = $urlWithoutKey.'?key='.urlencode($key);
+        return $content !== '' ? $content : null;
+    }
 
-        $userText = "Translate the following text to {$targetLang}. Return ONLY the translation, no markers, no chat.\n\n".$text;
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function chatWithKeyRotation(array $payload, string $step): mixed
+    {
+        $keys = $this->collectApiKeys();
+        if ($keys === []) {
+            Log::error('[OpenAiService] no OpenAI API keys configured (OPENAI_API_KEY / OPENAI_API_KEYS)');
 
-        try {
-            $response = Http::timeout(120)
-                ->acceptJson()
-                ->asJson()
-                ->post($url, [
-                    'contents' => [['parts' => [['text' => $userText]]]],
+            return null;
+        }
+
+        foreach ($keys as $index => $apiKey) {
+            $client = OpenAI::client($apiKey);
+            Log::info('[OpenAiService] using key slot', [
+                'index' => $index,
+                'key_preview' => $this->maskKeyForLog($apiKey),
+            ]);
+
+            $outcome = $this->tryChatCompletionWithRetries($client, $payload, $step);
+            if ($outcome['response'] !== null) {
+                return $outcome['response'];
+            }
+            if (! $outcome['try_next_key']) {
+                return null;
+            }
+            Log::warning('[OpenAiService] switching to next API key', [
+                'step' => $step,
+                'reason' => $outcome['reason'] ?? 'unknown',
+                'failed_index' => $index,
+            ]);
+        }
+
+        Log::error('[OpenAiService] all API keys failed for this request', ['step' => $step]);
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{response: mixed, try_next_key: bool, reason?: string}
+     */
+    private function tryChatCompletionWithRetries(Client $client, array $payload, string $step): array
+    {
+        $maxAttempts = (int) config('services.openai.rate_limit_retries', 8);
+        $baseWait = (int) config('services.openai.rate_limit_wait_base_sec', 10);
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                return ['response' => $client->chat()->create($payload), 'try_next_key' => false];
+            } catch (RateLimitException $e) {
+                $wait = $baseWait * $attempt;
+                Log::warning('[OpenAiService] rate limit 429, waiting', [
+                    'step' => $step,
+                    'attempt' => $attempt,
+                    'wait_sec' => $wait,
+                ]);
+                sleep($wait);
+            } catch (ErrorException $e) {
+                $code = $e->getStatusCode();
+                $msg = $this->sanitizeLogMessage($e->getMessage());
+
+                if (in_array($code, [401, 403], true)) {
+                    Log::error('[OpenAiService] auth error, will try next key if any', [
+                        'step' => $step,
+                        'http' => $code,
+                        'message' => $msg,
+                    ]);
+
+                    return ['response' => null, 'try_next_key' => true, 'reason' => 'http_'.$code];
+                }
+
+                if ($code === 429) {
+                    $wait = $baseWait * $attempt;
+                    Log::warning('[OpenAiService] HTTP 429, waiting', [
+                        'step' => $step,
+                        'attempt' => $attempt,
+                        'wait_sec' => $wait,
+                    ]);
+                    sleep($wait);
+
+                    continue;
+                }
+
+                Log::error('[OpenAiService] API error', [
+                    'step' => $step,
+                    'http' => $code,
+                    'message' => $msg,
                 ]);
 
-            if (! $response->successful()) {
-                Log::error('[Gemini] Ошибка перевода на '.$lang.': HTTP '.$response->status().' '.$response->body());
+                return ['response' => null, 'try_next_key' => false, 'reason' => 'http_'.$code];
+            } catch (Throwable $e) {
+                Log::error('[OpenAiService] unexpected error', [
+                    'step' => $step,
+                    'message' => $this->sanitizeLogMessage($e->getMessage()),
+                    'exception' => $e::class,
+                ]);
 
-                return null;
+                return ['response' => null, 'try_next_key' => false, 'reason' => 'exception'];
             }
-
-            $out = $response->json('candidates.0.content.parts.0.text');
-            if (! is_string($out)) {
-                Log::error('[Gemini] Ошибка перевода на '.$lang.': пустой или нестроковый ответ API');
-
-                return null;
-            }
-
-            return trim($out);
-        } catch (Throwable $e) {
-            Log::error('[Gemini] Ошибка перевода на '.$lang.': '.$e->getMessage());
-
-            return null;
         }
+
+        Log::error('[OpenAiService] max retries exceeded (rate limit)', ['step' => $step]);
+
+        return ['response' => null, 'try_next_key' => true, 'reason' => 'rate_limit_exhausted'];
     }
 
     /**
-     * Сериализация под хранение в MySQL: одна строка JSON на язык (pretty print для читаемости в админке).
-     *
-     * @param  array<string, array{title:string,text_1:string,text_2:string}>  $byLang
+     * Конвейер AiFieldGeneratorJob: материал + инструкция этапа из БД.
      */
-    private function packLanguagesForDb(array $byLang): ?array
+    public function chat(string $material, string $instruction): ?string
     {
-        $result = [];
-        foreach (['ru', 'en', 'he', 'ar'] as $lang) {
-            $row = $byLang[$lang] ?? null;
-            if (! is_array($row)) {
-                continue;
-            }
-            $encoded = json_encode([
-                'title' => $row['title'] ?? '',
-                'text_1' => $row['text_1'] ?? '',
-                'text_2' => $row['text_2'] ?? '',
-            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-            if ($encoded !== false) {
-                $result[$lang] = $encoded;
-            }
-        }
-        return count($result) > 0 ? $result : null;
+        return $this->askOpenAi(trim($instruction), trim($material), 'openai.chat');
     }
 
-    /** Диагностика стоимости/объёма запроса (токены в логах). */
     private function logCompletionUsage(mixed $response): void
     {
         $usage = $response->usage ?? null;
@@ -555,39 +237,47 @@ PROMPT;
         ]);
     }
 
-    /** Предупреждение, если модель уперлась в max_tokens — ответ может быть невалидным JSON. */
     private function logIfTruncated(mixed $response, string $stepLabel): void
     {
         $finish = $response->choices[0]?->finishReason ?? null;
         if ($finish === 'length') {
-            Log::warning("[OpenAiService] Ответ обрезан по лимиту токенов ({$stepLabel}). Увеличьте OPENAI_MAX_OUTPUT_TOKENS в .env.");
+            Log::warning("[OpenAiService] reply truncated ({$stepLabel}); raise OPENAI_MAX_OUTPUT_TOKENS if needed.");
         }
     }
 
-    /**
-     * Вызов chat()->create с экспоненциальной задержкой при 429.
-     * Прочие исключения не пробрасываются — вызывающий код получает null (частичная деградация по шагам).
-     */
-    private function createChatCompletionWithRateLimitRetry(array $payload, string $step, string $targetField): mixed
+    private function maskKeyForLog(string $apiKey): string
     {
-        $maxAttempts = (int) config('services.openai.rate_limit_retries', 8);
-        $baseWait = (int) config('services.openai.rate_limit_wait_base_sec', 10);
-
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            try {
-                return $this->client->chat()->create($payload);
-            } catch (RateLimitException $e) {
-                // Линейное наращивание паузы: baseWait * attempt секунд между попытками одного шага.
-                $wait = $baseWait * $attempt;
-                Log::warning("[OpenAiService] Лимит API (429). Попытка {$attempt}. Ждем {$wait} сек.", ['step' => $step, 'target_field' => $targetField]);
-                sleep($wait);
-            } catch (\Throwable $e) {
-                Log::error('[OpenAiService] Ошибка: '.$e->getMessage(), ['step' => $step]);
-
-                return null;
-            }
+        $t = trim($apiKey);
+        if ($t === '') {
+            return '(empty)';
+        }
+        if (strlen($t) <= 12) {
+            return substr($t, 0, 4).'…';
         }
 
-        return null;
+        return substr($t, 0, 7).'…'.substr($t, -4);
+    }
+
+    private function sanitizeLogMessage(string $message): string
+    {
+        $out = preg_replace('/sk-[a-zA-Z0-9_-]{8,}\S*/', 'sk-[REDACTED]', $message);
+
+        return is_string($out) ? $out : $message;
+    }
+
+    /**
+     * Что реально уходит в user-сообщение: инструкция этапа + разделитель + материал (сырьё / шаг пайплайна).
+     */
+    private function logPipelineMaterial(string $callSite, string $instruction, string $material): void
+    {
+        $preview = 900;
+        Log::info('[OpenAiService] pipeline material (before API)', [
+            'call' => $callSite,
+            'instruction_len' => mb_strlen($instruction),
+            'material_len' => mb_strlen($material),
+            'material_sha1' => hash('sha1', $material),
+            'instruction_preview' => mb_substr($instruction, 0, $preview),
+            'material_preview' => mb_substr($material, 0, $preview),
+        ]);
     }
 }

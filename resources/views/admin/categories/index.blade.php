@@ -5,12 +5,12 @@
         <div class="container-fluid">
             <div class="row mb-2">
                 <div class="col-sm-6">
-                    <h1>Categories - Список</h1>
+                    <h1>Категории - Список</h1>
                 </div>
                 <div class="col-sm-6">
                     <ol class="breadcrumb float-sm-right">
                         <li class="breadcrumb-item"><a href="{{ route('admin.index') }}">Home</a></li>
-                        <li class="breadcrumb-item active">Categories</li>
+                        <li class="breadcrumb-item active">Категории</li>
                     </ol>
                 </div>
             </div>
@@ -33,7 +33,6 @@
                                     <thead>
                                         <tr>
                                             <th style="width: 50px">#</th>
-                                            <th>Slug</th>
                                             <th>Название</th>
                                             <th>Порядок</th>
                                             <th>Статус</th>
@@ -52,7 +51,6 @@
                                             @endphp
                                             <tr>
                                                 <td>{{ $loop->iteration }}</td>
-                                                <td>{{ $d->slug ?? '—' }}</td>
                                                 <td>{{ $d->name ?? '—' }}</td>
                                                 <td>{{ $item->sort_order }}</td>
                                                 <td>{{ $item->status ? 'Да' : 'Нет' }}</td>
@@ -73,7 +71,7 @@
                                             </tr>
                                         @empty
                                             <tr>
-                                                <td colspan="7" class="text-center">Нет данных</td>
+                                                <td colspan="6" class="text-center">Нет данных</td>
                                             </tr>
                                         @endforelse
                                     </tbody>

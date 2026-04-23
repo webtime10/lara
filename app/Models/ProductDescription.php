@@ -7,6 +7,13 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ProductDescription extends Model
 {
+    public const AI_FIELDS = [
+        'ai_text_about_the_country' => 'Текст о стране',
+        'ai_seasons_line' => 'Линейка сезонов',
+        'ai_faq' => 'FAQ',
+    ];
+
+
     protected $fillable = [
         'product_id',
         'language_id',
@@ -14,12 +21,31 @@ class ProductDescription extends Model
         'slug',
         'description',
         'ai_text_about_the_country',
-        'ai_reviews_from_tourists',
+        'ai_seasons_line',
+        'ai_faq',
         'tag',
         'meta_title',
         'meta_description',
         'meta_keyword',
+        'result',
     ];
+
+    public function __construct(array $attributes = [])
+    {
+        parent::__construct($attributes);
+        $this->fillable(array_merge($this->getFillable(), self::aiFieldKeys()));
+    }
+
+    public static function aiFieldLabels(): array
+    {
+        return self::AI_FIELDS; // весь массив  это я предаю и работаю сним в контроллере
+    }
+
+    public static function aiFieldKeys(): array
+    {
+        return array_keys(self::AI_FIELDS);   // возьми только ключи
+    }
+
 
     public function product(): BelongsTo
     {

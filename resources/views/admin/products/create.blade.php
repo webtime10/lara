@@ -7,7 +7,7 @@
                 <div class="col-sm-6"><h1>{{ $pageTitle }}</h1></div>
                 <div class="col-sm-6">
                     <ol class="breadcrumb float-sm-right">
-                        <li class="breadcrumb-item"><a href="{{ route('admin.products.index') }}">Товары</a></li>
+                        <li class="breadcrumb-item"><a href="{{ route('admin.products.index') }}">Посты</a></li>
                         <li class="breadcrumb-item active">Создание</li>
                     </ol>
                 </div>
@@ -18,7 +18,7 @@
         <div class="container-fluid">
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Данные товара</h3>
+                    <h3 class="card-title">Данные поста</h3>
                     <div class="card-tools">
                         <a href="{{ route('admin.products.index') }}" class="btn btn-default btn-sm">
                             <i class="fas fa-reply"></i> Назад
@@ -35,7 +35,7 @@
                             <div class="alert alert-danger"><ul class="mb-0">@foreach ($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul></div>
                         @endif
                         @if($categories->isEmpty())
-                            <p class="text-muted small mb-3">Категорий пока нет — можно <a href="{{ route('admin.categories.create') }}">создать категорию</a>, чтобы привязать товар.</p>
+                            <p class="text-muted small mb-3">Категорий пока нет — можно <a href="{{ route('admin.categories.create') }}">создать категорию</a>, чтобы привязать пост.</p>
                         @endif
 
                         <div class="form-group">
@@ -67,7 +67,7 @@
                             </div>
                             <div class="col-md-4">
                                 <div class="form-group">
-                                    <label for="manufacturer_id">Производитель</label>
+                                    <label for="manufacturer_id">Сайт</label>
                                     <select name="manufacturer_id" id="manufacturer_id" class="form-control">
                                         <option value="">—</option>
                                         @foreach($manufacturers as $m)

@@ -10,7 +10,7 @@ class ManufacturerController extends Controller
 {
     public function index()
     {
-        $pageTitle = 'Производители';
+        $pageTitle = 'Сайт';
         $manufacturers = Manufacturer::orderBy('sort_order')->orderBy('name')->paginate(30);
 
         return view('admin.manufacturers.index', compact('manufacturers', 'pageTitle'));
@@ -18,7 +18,7 @@ class ManufacturerController extends Controller
 
     public function create()
     {
-        $pageTitle = 'Производитель — создание';
+        $pageTitle = 'Сайт — создание';
 
         return view('admin.manufacturers.create', compact('pageTitle'));
     }
@@ -42,7 +42,7 @@ class ManufacturerController extends Controller
     public function edit(string $id)
     {
         $manufacturer = Manufacturer::findOrFail($id);
-        $pageTitle = 'Производитель — редактирование';
+        $pageTitle = 'Сайт — редактирование';
 
         return view('admin.manufacturers.edit', compact('manufacturer', 'pageTitle'));
     }

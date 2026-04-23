@@ -8,7 +8,7 @@
                 <div class="col-sm-6">
                     <ol class="breadcrumb float-sm-right">
                         <li class="breadcrumb-item"><a href="{{ route('admin.index') }}">Home</a></li>
-                        <li class="breadcrumb-item active">Товары</li>
+                        <li class="breadcrumb-item active">Посты</li>
                     </ol>
                 </div>
             </div>
@@ -18,7 +18,7 @@
         <div class="container-fluid">
             <div class="card">
                 <div class="card-header">
-                    <a href="{{ route('admin.products.create') }}" class="btn btn-primary float-right">Добавить товар</a>
+                    <a href="{{ route('admin.products.create') }}" class="btn btn-primary float-right">Добавить пост</a>
                 </div>
                 <div class="card-body border-bottom">
                     <form method="GET" action="{{ route('admin.products.index') }}">
@@ -67,9 +67,9 @@
                             </div>
                             <div class="col-md-3">
                                 <div class="form-group mb-2">
-                                    <label for="manufacturer">Производитель</label>
+                                    <label for="manufacturer">Сайт</label>
                                     <select name="manufacturer" id="manufacturer" class="form-control">
-                                        <option value="">Все производители</option>
+                                        <option value="">Все сайты</option>
                                         @foreach($manufacturers as $manufacturer)
                                             <option value="{{ $manufacturer->id }}" {{ (string)$selectedManufacturer === (string)$manufacturer->id ? 'selected' : '' }}>
                                                 {{ $manufacturer->name }}
@@ -111,7 +111,7 @@
                                     </td>
                                 </tr>
                             @empty
-                                <tr><td colspan="5" class="text-center">Нет товаров</td></tr>
+                                <tr><td colspan="5" class="text-center">Нет постов</td></tr>
                             @endforelse
                         </tbody>
                     </table>

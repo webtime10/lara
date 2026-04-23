@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="{{ $lang->code ?? 'ru' }}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -33,6 +33,8 @@
         <h1><a href="{{ route('catalog.index') }}" style="color:inherit;">Каталог</a></h1>
         <nav>
             <a href="{{ route('catalog.index') }}">Главная</a>
+            <span class="muted"> · </span>
+            <a href="{{ route('prompt-catalog.index', ['lang' => $lang->code ?? null]) }}">Промты</a>
             @auth
                 <span class="muted"> · </span>
                 <a href="{{ route('admin.index') }}">Админка</a>
@@ -40,6 +42,12 @@
                 <span class="muted"> · </span>
                 <a href="{{ route('login') }}">Вход</a>
             @endauth
+            @if(!empty($availableLanguages) && count($availableLanguages) > 1)
+                <span class="muted"> · </span>
+                @foreach($availableLanguages as $availableLanguage)
+                    <a href="{{ request()->fullUrlWithQuery(['lang' => $availableLanguage->code]) }}">{{ strtoupper($availableLanguage->code) }}</a>@if(!$loop->last)<span class="muted"> / </span>@endif
+                @endforeach
+            @endif
         </nav>
     </div>
 </header>

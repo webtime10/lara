@@ -30,16 +30,14 @@
                 {!! $prodDesc->description !!}
             </div>
         @endif
-        @if(!empty($prodDesc->ai_text_about_the_country))
-            <div class="product-meta product-about-country">
-                {!! $prodDesc->aiStructuredFieldHtml('ai_text_about_the_country') !!}
-            </div>
-        @endif
-        @if(!empty($prodDesc->ai_reviews_from_tourists))
-            <div class="product-meta product-tourist-reviews">
-                <h2>Отзывы туристов</h2>
-                {!! $prodDesc->aiStructuredFieldHtml('ai_reviews_from_tourists') !!}
-            </div>
-        @endif
+        @php($aiFields = \App\Models\ProductDescription::aiFieldLabels())
+        @foreach($aiFields as $fieldKey => $fieldLabel)
+            @if(!empty($prodDesc->{$fieldKey}))
+                <div class="product-meta product-ai-field product-ai-field-{{ $fieldKey }}">
+                    <h2>{{ $fieldLabel }}</h2>
+                    {!! $prodDesc->aiStructuredFieldHtml($fieldKey) !!}
+                </div>
+            @endif
+        @endforeach
     </article>
 @endsection

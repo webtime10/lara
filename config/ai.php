@@ -7,7 +7,8 @@ return [
 */
     'generation' => [
         'expected_languages' => ['ru', 'en', 'he', 'ar'],
-        'timeout_seconds' => 300,
+        // Полный прогон: несколько AI-полей × языки × (OpenAI+OpenAI+Gemini) легко > 5 мин.
+        'timeout_seconds' => (int) env('AI_GENERATION_TIMEOUT', 3600),
     ],
 
 ];

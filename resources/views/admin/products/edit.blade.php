@@ -1,10 +1,10 @@
 {{-- 
-    Шаблон страницы редактирования товара в админ‑панели.
+    Шаблон страницы редактирования поста в админ‑панели.
     Здесь:
-    - показывается форма редактирования товара (модель, категории, описания на разных языках);
+    - показывается форма редактирования поста (модель, категории, описания на разных языках);
     - есть спец‑поле source_text (сырьё для AI);
     - по кнопке "Сгенерировать контент..." отправляется AJAX‑запрос в админ‑контроллер,
-      который кладёт задачу в очередь (Redis), а фоновый worker обновляет описания товара.
+      который кладёт задачу в очередь (Redis), а фоновый worker обновляет описания поста.
 --}}
 @extends('admin.layouts.layout')
 
@@ -16,7 +16,7 @@
                 <div class="col-sm-6"><h1>{{ $pageTitle }}</h1></div>
                 <div class="col-sm-6">
                     <ol class="breadcrumb float-sm-right">
-                        <li class="breadcrumb-item"><a href="{{ route('admin.products.index') }}">Товары</a></li>
+                        <li class="breadcrumb-item"><a href="{{ route('admin.products.index') }}">Посты</a></li>
                         <li class="breadcrumb-item active">Редактирование</li>
                     </ol>
                 </div>
@@ -25,10 +25,19 @@
     </section>
     <section class="content">
         <div class="container-fluid">
-            {{-- Основная карточка с формой редактирования товара --}}
+            {{-- Основная карточка с формой редактирования поста --}}
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Данные товара</h3>
+                    <button
+                        type="button"
+                        id="btn-wp-publish"
+                        class="btn btn-primary btn-sm"
+                        data-product-id="{{ $product->id }}"
+                        title="Publish to WordPress"
+                        aria-label="Publish to WordPress"
+                    >
+                        <i class="fab fa-wordpress"></i> WordPress
+                    </button>
                     <div class="card-tools">
                         <a href="{{ route('admin.products.index') }}" class="btn btn-default btn-sm">
                             <i class="fas fa-reply"></i> Назад
@@ -39,7 +48,7 @@
                     </div>
                 </div>
                 {{-- 
-                    Основная форма редактирования товара.
+                    Основная форма редактирования поста.
                     - отправляется на маршрут admin.products.update (метод PUT в ProductController@update);
                     - НЕ отвечает за запуск AI — за это отвечает AJAX‑скрипт ниже.
                 --}}
@@ -51,9 +60,9 @@
                         @endif
 
                         {{-- 
-                            Выбранные категории товара.
+                            Выбранные категории поста.
                             - берём либо значения из old() (если форма вернулась с ошибками),
-                              либо текущие категории товара из связи $product->categories.
+                              либо текущие категории поста из связи $product->categories.
                         --}}
                         @php $sel = old('category_ids', $product->categories->pluck('id')->all()); @endphp
                         <div class="form-group">
@@ -70,7 +79,7 @@
                             </div>
                         </div>
 
-                        {{-- Блок параметров товара: модель, SKU и производитель --}}
+                        {{-- Блок параметров поста: модель, SKU и сайт --}}
                         <div class="row">
                             <div class="col-md-4">
                                 <div class="form-group">
@@ -86,7 +95,7 @@
                             </div>
                             <div class="col-md-4">
                                 <div class="form-group">
-                                    <label for="manufacturer_id">Производитель</label>
+                                    <label for="manufacturer_id">Сайт</label>
                                     <select name="manufacturer_id" id="manufacturer_id" class="form-control">
                                         <option value="">—</option>
                                         @foreach($manufacturers as $m)
@@ -120,8 +129,6 @@
                                 @php
                                     $c = $language->code;
                                     $desc = $product->descriptions->firstWhere('language_id', $language->id);
-                                    $aiCountryForForm = \App\Support\AiDescriptionJsonNormalizer::normalize($desc?->ai_text_about_the_country) ?? '';
-                                    $aiReviewsForForm = \App\Support\AiDescriptionJsonNormalizer::normalize($desc?->ai_reviews_from_tourists) ?? '';
                                 @endphp
                                 <div class="tab-pane fade {{ $i === 0 ? 'show active' : '' }}" id="lang{{ $language->id }}">
                                     <div class="form-group">
@@ -145,7 +152,6 @@
                                             
                                             <label class="mb-0 mr-2">{{ $fieldLabel }}</label>
                                             
-                                            {{-- ВОТ ОНО! Сюда попадает ai_reviews_from_tourists или ai_text_about_the_country --}}
                                             <a href="javascript:void(0)" class="ai-status-indicator" data-field="{{ $fieldKey }}">
                                                 <i class="fas fa-circle text-secondary"></i>
                                             </a>
@@ -163,16 +169,6 @@
                             @endforeach
                         </div>
 
-                        <div class="form-group mt-3">
-                            <label for="ai_field_selector">AI поля (из БД, префикс ai_)</label>
-                            <select id="ai_field_selector" class="form-control">
-                                @forelse($aiFields as $aiField => $aiFieldLabel)
-                                    <option value="{{ $aiField }}">{{ $aiFieldLabel }}</option>
-                                @empty
-                                    <option value="">Нет ai_ полей</option>
-                                @endforelse
-                            </select>
-                        </div>
                         {{-- 
                             Блок для AI:
                             - textarea source_text хранит "сырой" текст (например, отзывы, описания);
@@ -181,6 +177,13 @@
                         --}}
                         <div class="form-group mt-3 p-3" style="background: #e6f0ff; border-radius: 8px; border: 1px solid #b3c6ff;">
                             <label for="source_text"><i class="fas fa-file-alt"></i> Исходное сырьё для AI (отзывы, описания, факты)</label>
+                            <div class="mb-2 d-flex flex-wrap align-items-center gap-2 small">
+                                <input type="file" id="source_text_file" name="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" class="d-none">
+                                <button type="button" class="btn btn-outline-primary btn-sm" id="source_text_attach_btn" title="PDF, DOCX, TXT">
+                                    <i class="fas fa-paperclip"></i> Прикрепить файл
+                                </button>
+                                <span class="text-muted">Текст из файла добавится в поле ниже.</span>
+                            </div>
                             <textarea
                                 name="source_text"
                                 id="source_text_input" 
@@ -189,20 +192,17 @@
                                 style="background:#f5f8ff;border-color:#0644ff;"
                                 placeholder="Вставьте сюда текст со швейцарских сайтов или соцсетей..."
                             >{{ old('source_text', $product->source_text) }}</textarea>
-                            <div class="wrap-ai-status-indicator">
+                            <div class="wrap-ai-status-indicator" style="display:none;">
                                 <label for="result_textarea" class="mt-3"><span><i class="fas fa-check-circle"></i> Результат (Result)</span>
 
                                 </label>
-                                <a href="javascript:void(0)" class="ai-status-indicator" data-field="ai_reviews_from_tourists">
-                                    <i class="fas fa-circle text-secondary"></i>
-                                </a>
                             </div>   
                             <textarea
                                 name="result"
                                 id="result_textarea"
                                 class="form-control"
                                 rows="6"
-                                style="background:#eef4ff;border-color:#b3c6ff;"
+                                style="display:none;background:#eef4ff;border-color:#b3c6ff;"
                                 placeholder="Буфер для итогового текста (например, результат AI)..."
                             >{{ old('result', $product->result) }}</textarea>
                             
@@ -218,7 +218,7 @@
                                 </div>
                             </div>
                         </div>
-                        {{-- Переключатель "Активен" — статус товара (boolean поле в модели Product) --}}
+                        {{-- Переключатель "Активен" — статус поста (boolean поле в модели Product) --}}
                         <div class="form-group mt-3">
                             <input type="hidden" name="status" value="0">
                             <label><input type="checkbox" name="status" value="1" {{ old('status', $product->status) ? 'checked' : '' }}> Активен</label>
@@ -243,67 +243,140 @@
         $aiCheckExpectedLanguages = config('ai.generation.expected_languages', ['ru', 'en', 'he', 'ar']);
     @endphp
     <script>
-    $(function () {
-        // Обработка клика по кнопке "Сгенерировать контент для всех языков"
     
-        $('#ai_field_selector').on('change', function() {
-                    var selectedField = $(this).val();
-                    var $btn = $('#btn-generate-ai');
-                    var $loader = $('#ai-loader');
-                    
-                    // Ищем иконку индикатора для выбранного поля
-                    var $icon = $('.ai-status-indicator[data-field="' + selectedField + '"] i');
-
-                    // Если это поле сейчас в процессе (желтое) — блокируем кнопку
-                    if ($icon.hasClass('text-warning')) {
-                        $btn.prop('disabled', true);
-                        $loader.show();
-                    } else {
-                        $btn.prop('disabled', false);
-                        $loader.hide();
-                    }
+    // jQuery(document).ready — выполняем весь код ниже после построения DOM (поля формы уже в дереве).
+    $(function () {
+        // Кэшируем jQuery-обёртку textarea «исходное сырьё для AI» (id задан в разметке выше).
+        var $sourceTa = $('#source_text_input');
+        // Строка, которой временно подменяем содержимое поля на время чтения файла на сервере.
+        var sourceFileReadMsg = 'Читаю файл, подождите...';
+        // Вешаем обработчик на кнопку «Прикрепить файл» — сам input[type=file] скрыт (class d-none).
+        $('#source_text_attach_btn').on('click', function () { // кликаю по кнопке а срабатывает инпут
+            // Программно «нажимаем» скрытый input — откроется системный диалог выбора файла.
+            $('#source_text_file').trigger('click');
         });
-       
-       
+        // После выбора файла срабатывает change у нативного <input type="file">.
+        $('#source_text_file').on('change', function () {
+            // Внутри обработчика this — DOM-элемент file-input (не jQuery-объект).
+            var fileInput = this;
+            // Берём первый файл из FileList; если списка нет — получим undefined.
+            var file = fileInput.files && fileInput.files[0];
+            // Пользователь мог отменить диалог или очистить выбор — не шлём AJAX.
+            if (!file) {
+                return;
+            }
+            // Сохраняем текущий текст, чтобы после ответа сервера дописать извлечённое, а не затереть.
+            var previousVal = $sourceTa.val();
+            // Блокируем редактирование и показываем «Читаю файл…», чтобы не правили параллельно.
+            $sourceTa.prop('disabled', true).val(sourceFileReadMsg);
+            // FormData нужен для multipart: файл уйдёт как бинарное тело, не как строка в JSON.
+            var formData = new FormData();
+            // Имя поля «file» должно совпадать с тем, что ожидает маршрут admin.products.extract_text.
+            formData.append('file', file);
+            // Отправляем файл на сервер для извлечения текста (PDF/DOCX/TXT обрабатывает бэкенд).
+
+// здесь закидываем текст или файл аякс возвращет то сто закинуто промежуточный этап перд отправкой
+
+            $.ajax({
+                // Относительный URL (второй аргумент route false) — та же схема/хост, что у страницы (важно для cookie сессии).
+                url: "{{ route('admin.products.extract_text', [], false) }}",
+                // Метод POST — загрузка файла и побочные эффекты на сервере.
+                method: 'POST',
+                // Заголовки: CSRF для Laravel, X-Requested-With — признак AJAX, Accept — просим JSON.
+                headers: {
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                },
+                // Тело запроса — наш FormData с файлом.
+                data: formData,
+                // Не превращать data в строку querystring (иначе сломается загрузка файла).
+                processData: false,
+                // Не подставлять application/x-www-form-urlencoded — браузер сам поставит multipart boundary.
+                contentType: false
+            })
+                // Успешный HTTP-ответ: в res ожидается объект с полем text (извлечённый текст).
+                .done(function (res) {
+                    // Берём текст из ответа или пустую строку, если структура неожиданная.
+                    var chunk = (res && res.text) ? res.text : '';
+                    // Разделитель между старым и новым: двойной перенос, если старый не заканчивается на \n; иначе один \n или пусто.
+                    var sep = (previousVal && !/\n$/.test(previousVal)) ? '\n\n' : (previousVal ? '\n' : '');
+                    // Возвращаем поле в режим редактирования и дописываем извлечённый фрагмент к прежнему содержимому.
+                    $sourceTa.prop('disabled', false).val(previousVal + sep + chunk);
+                })
+                // Ошибка сети/валидации/500 — показываем message из JSON или код статуса, восстанавливаем textarea.
+                .fail(function (xhr) {
+                    var msg = (xhr.responseJSON && xhr.responseJSON.message)
+                        ? xhr.responseJSON.message
+                        : ('Ошибка ' + (xhr.status || '') );
+                    $sourceTa.prop('disabled', false).val(previousVal);
+                    alert(msg);
+                })
+                // В любом исходе сбрасываем value у file-input, чтобы повторный выбор того же файла снова вызвал change.
+                .always(function () {
+                    fileInput.value = '';
+                });
+        });
+
+        var aiFieldKeys = @json(array_keys($aiFields));
+        var indicatorSelector = '.ai-status-indicator[data-field="%FIELD%"] i';
+
+        function setFieldIndicatorState(field, status) {
+            var $fieldIndicators = $(indicatorSelector.replace('%FIELD%', field));
+            if (!$fieldIndicators.length) {
+                return;
+            }
+            if (status === 'success') {
+                $fieldIndicators.removeClass('text-warning text-danger text-secondary').addClass('text-success');
+            } else if (status === 'error') {
+                $fieldIndicators.removeClass('text-warning text-success text-secondary').addClass('text-danger');
+            } else {
+                $fieldIndicators.removeClass('text-success text-danger text-secondary').addClass('text-warning');
+            }
+        }
+
+        function setAllIndicatorsState(status) {
+            aiFieldKeys.forEach(function (field) {
+                setFieldIndicatorState(field, status);
+            });
+        }
+
+        // Клик по «Сгенерировать контент для всех языков» — старт генерации по всем AI-полям сразу.
         $('#btn-generate-ai').on('click', function () {
 
-
-  
-
-
+            // Сырьё для AI: Source или, если он пустой, поле «Результат» (как на бэкенде при сохранении в product_descriptions.result).
             var sourceText = $('#source_text_input').val();
             var resultText = $('#result_textarea').val();
-            var targetAiField = $('#ai_field_selector').val();
+            // this внутри handler — сама нажатая кнопка; оборачиваем в jQuery для .prop и т.д.
             var $btn = $(this);
+            // Тот же спиннер, что и в обработчике change селекта.
             var $loader = $('#ai-loader');
 
-            // Минимальная длина текста для генерации — 10 символов
-            if (!sourceText || $.trim(sourceText).length < 10) {
-                alert('Слишком короткий текст для генерации. Добавьте больше данных!');
+            // Минимум 10 символов: достаточно заполнить Source или только Result.
+            var rawForAi = $.trim(sourceText || '') || $.trim(resultText || '');
+            if (!rawForAi || rawForAi.length < 10) {
+                alert('Слишком короткий текст для генерации. Заполните «Исходное сырьё» или «Результат» (не меньше 10 символов).');
                 return;
             }
-            if (!targetAiField) {
-                alert('Выберите AI поле для записи результата.');
-                return;
-            }
-
-            // Защита от случайного запуска: предупреждаем, что будет перезаписано выбранное AI-поле.
-            if (!confirm('Это перезапишет выбранное AI поле для всех языков. Продолжить?')) {
+            // Если в конфиге нет ai-полей — не отправляем запрос.
+            if (!aiFieldKeys.length) {
+                alert('Нет AI-полей для генерации.');
                 return;
             }
 
-            // На время запроса блокируем кнопку (чтобы не нажимали несколько раз подряд)
-            // и показываем индикатор загрузки рядом с ней.
+            // Подтверждение: будет перезапись всех AI-полей во всех языках.
+            if (!confirm('Это перезапишет все AI-поля для всех языков. Продолжить?')) {
+                return;
+            }
+
+            // Первая блокировка UI до ответа generate_ai (защита от двойного клика).
             $btn.prop('disabled', true);
             $loader.show();
 
+        // Ставим "в процессе" для всех AI-индикаторов.
+        setAllIndicatorsState('processing');
 
-// --- ВИЗУАЛИЗАЦИЯ ЗАПУСКА ---
-        // Находим все индикаторы этого поля (во всех табах) и красим в желтый
-        var $indicators = $('.ai-status-indicator[data-field="' + targetAiField + '"] i');
-        $indicators.removeClass('text-secondary text-success text-danger').addClass('text-warning');
-
-        // Блокируем кнопку и показываем лоадер
+        // Повторно фиксируем disabled/лоадер (дублирует первичную блокировку, но гарантирует состояние после смены классов иконок).
         $btn.prop('disabled', true);
         $loader.show();
 
@@ -324,8 +397,7 @@
                 data: {
                     product_id: {{ $product->id }},
                     source_text: sourceText,
-                    result_text: resultText,
-                    ai_field: targetAiField
+                    result_text: resultText
                 }
             })
                 // УСПЕШНЫЙ ОТВЕТ СЕРВЕРА (HTTP 200, без ошибок в контроллере)
@@ -333,18 +405,19 @@
     alert(data.message || 'Процесс запущен в фоне');
     
     // Ссылка на проверку (маршрут, который ты добавил в web.php)
+// заходит в метод проверок и узнает состояние светафора
+
     var checkUrl = "{{ route('admin.products.check_ai_status', $product->id, false) }}";
     
-    // Опрос: зелёный только если в БД появился новый контент (поле перед job очищено на сервере).
+    // Опрос: зелёный только если в БД появился новый контент по всем AI-полям.
     var pollAttempts = 0;
-    var maxPollAttempts = 120; // 120 × 5 с ≈ 10 мин
+    {{-- Интервал 5 с; держим опрос дольше server-side таймаута (config ai.generation.timeout_seconds) --}}
+    var maxPollAttempts = {{ (int) ceil((int) config('ai.generation.timeout_seconds', 3600) / 5) + 120 }};
     var pollTimer = setInterval(function () {
         pollAttempts += 1;
         if (pollAttempts > maxPollAttempts) {
             clearInterval(pollTimer);
-            $('.ai-status-indicator[data-field="' + targetAiField + '"] i')
-                .removeClass('text-warning text-success')
-                .addClass('text-danger');
+            setAllIndicatorsState('error');
             alert('Генерация не завершилась за отведённое время. Проверьте логи (очередь, OPENAI_API_KEY / php artisan config:clear).');
             $('#btn-generate-ai').prop('disabled', false);
             $('#ai-loader').hide();
@@ -354,7 +427,6 @@
             url: checkUrl,
             method: 'GET',
             data: {
-                field: targetAiField,
                 languages: @json($aiCheckExpectedLanguages)
             },
             dataType: 'json',
@@ -363,23 +435,35 @@
                 'Accept': 'application/json'
             },
             success: function (res) {
+                if (res && res.fields) {
+                    aiFieldKeys.forEach(function(field) {
+                        var fieldPayload = res.fields[field] || {};
+                        setFieldIndicatorState(field, fieldPayload.status || 'processing');
+                    });
+                }
+
                 if (res && res.status === 'error') {
                     clearInterval(pollTimer);
-                    $('.ai-status-indicator[data-field="' + targetAiField + '"] i')
-                        .removeClass('text-warning text-success')
-                        .addClass('text-danger');
-                    var hint = (res.missing_languages && res.missing_languages.length)
-                        ? '\nНе хватает языков: ' + res.missing_languages.join(', ')
-                        : '';
-                    alert('Ошибка генерации или таймаут. См. laravel.log и failed_jobs.' + hint);
+                    var hintParts = [];
+                    if (res.fields) {
+                        aiFieldKeys.forEach(function (f) {
+                            var p = res.fields[f] || {};
+                            if (p.status === 'error' && p.error_reason) {
+                                hintParts.push(f + ': ' + p.error_reason);
+                            }
+                        });
+                    }
+                    var hint = hintParts.length ? ('\n\n' + hintParts.join('\n')) : '';
+                    var tmo = (typeof res.timeout_seconds !== 'undefined') ? res.timeout_seconds : '';
+                    alert('Ошибка генерации (опрос статуса).' + hint
+                        + (tmo !== '' ? '\n\nТаймаут сервера: ' + tmo + ' с (env AI_GENERATION_TIMEOUT / config ai.generation.timeout_seconds).' : '')
+                        + '\n\nСм. также laravel.log и таблицу failed_jobs.');
                     $('#btn-generate-ai').prop('disabled', false);
                     $('#ai-loader').hide();
                     return;
                 }
                 if (res && res.is_ready === true && res.status === 'success') {
-                    $('.ai-status-indicator[data-field="' + targetAiField + '"] i')
-                        .removeClass('text-warning text-danger')
-                        .addClass('text-success');
+                    setAllIndicatorsState('success');
                     $('#btn-generate-ai').prop('disabled', false);
                     $('#ai-loader').hide();
                     clearInterval(pollTimer);
@@ -387,19 +471,17 @@
             },
             error: function (xhr) {
                 clearInterval(pollTimer);
-                $('.ai-status-indicator[data-field="' + targetAiField + '"] i')
-                    .removeClass('text-warning text-success')
-                    .addClass('text-danger');
+                setAllIndicatorsState('error');
                 alert('Ошибка проверки статуса: ' + xhr.status);
                 $('#btn-generate-ai').prop('disabled', false);
                 $('#ai-loader').hide();
             }
         });
-    }, 5000); // 5 секунд — оптимально для Одесского интернета
+    }, 5000); // интервал опроса статуса
 })
                 // ОТВЕТ С ОШИБКОЙ (например, валидация, 500, проблемы с Redis/OpenAI и т.п.)
                 .fail(function (xhr) {
-                    $indicators.removeClass('text-warning').addClass('text-danger');
+                    setAllIndicatorsState('error');
                     var msg = (xhr.responseJSON && xhr.responseJSON.message)
                         ? xhr.responseJSON.message
                         : 'Ошибка сервера или лимиты API';
@@ -409,7 +491,44 @@
                 });
         });
     });
-    
+ /*
+написано так загружай загрузил файл, он отправился на сервер, Потом он вернулся. Уже переработано, если оно в доке или или даже не в доке обычный текст. И потом он загружается снова уже переработаны.  после чего и после чего оно отправляется уже в другой контроллер на обработку
+в итоге на мервер предется сырьё, и результат + айди страницы
+
+*/   
     </script>
+<script>
+$(function () {
+    var wpButtonHtml = '<i class="fab fa-wordpress"></i> WordPress';
+
+    $('#btn-wp-publish').on('click', function () {
+        var $btn = $(this);
+
+        $btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Sending...');
+
+        $.ajax({
+            url: '{{ route("admin.products.publish_wordpress", ["product" => $product->id], false) }}',
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json'
+            }
+        })
+            .done(function (response) {
+                alert(response.message || 'Publish queued.');
+                $btn.html('<i class="fas fa-check"></i> Queued');
+            })
+            .fail(function (xhr) {
+                var msg = (xhr.responseJSON && xhr.responseJSON.message)
+                    ? xhr.responseJSON.message
+                    : 'Unknown error';
+                alert('Error: ' + msg);
+                $btn.prop('disabled', false).html(wpButtonHtml);
+            });
+    });
+});
+</script>
+
     @include('admin.partials.slug-auto-sync')
 @endsection

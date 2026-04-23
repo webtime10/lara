@@ -30,7 +30,7 @@ class CategoryController extends Controller
     /** Список с пагинацией; подгружаются parent и descriptions для отображения имён по языкам. */
     public function index()
     {
-        $pageTitle = 'Categories - Список';
+        $pageTitle = 'Категории - Список';
         $defaultLanguage = Language::getDefault();
         $categories = Category::with(['parent.descriptions', 'descriptions'])
             ->orderBy('sort_order')
@@ -43,7 +43,7 @@ class CategoryController extends Controller
     /** Форма создания: дерево родителей на языке по умолчанию + все языки из Language::forAdminForms(). */
     public function create()
     {
-        $pageTitle = 'Categories - Создание';
+        $pageTitle = 'Категория - Создание';
         $languages = Language::forAdminForms();
         $defaultLanguage = Language::getDefault();
         $parentOptions = Category::treeForParentSelect($defaultLanguage, []);
@@ -150,7 +150,7 @@ class CategoryController extends Controller
      */
     public function edit(string $id)
     {
-        $pageTitle = 'Categories - Редактирование';
+        $pageTitle = 'Категория - Редактирование';
         $category = Category::with('descriptions')->findOrFail($id);
         $languages = Language::forAdminForms();
         $defaultLanguage = Language::getDefault();

@@ -3,11 +3,16 @@ use App\Http\Controllers\Admin\MainController;
 use App\Http\Controllers\Admin\CategoryController;
 use App\Http\Controllers\Admin\LanguageController;
 use App\Http\Controllers\Admin\ManufacturerController;
+use App\Http\Controllers\Admin\PromptCategoryController;
+use App\Http\Controllers\Admin\PromptController;
 use App\Http\Controllers\Admin\ProductController;
 use App\Http\Controllers\Admin\RoleController;
 use App\Http\Controllers\Admin\UserController;
+use App\Http\Controllers\Admin\WordPressController;
 use App\Http\Controllers\Auth\AdminLoginController;
 use App\Http\Controllers\Catalog\CatalogController;
+use App\Http\Controllers\Catalog\PromptCatalogController;
+use App\Http\Controllers\Admin\TestController;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 
@@ -15,6 +20,9 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', [CatalogController::class, 'index'])->name('catalog.index');
 Route::get('/category/{slug}', [CatalogController::class, 'category'])->name('catalog.category');
 Route::get('/product/{slug}', [CatalogController::class, 'product'])->name('catalog.product');
+Route::get('/prompts', [PromptCatalogController::class, 'index'])->name('prompt-catalog.index');
+Route::get('/prompt-category/{slug}', [PromptCatalogController::class, 'category'])->name('prompt-catalog.category');
+Route::get('/prompt/{slug}', [PromptCatalogController::class, 'prompt'])->name('prompt-catalog.prompt');
 
 // --- АВТОРИЗАЦИЯ ---
 // Страница входа и обработка формы
@@ -35,6 +43,8 @@ Route::prefix('admin')
         // Главная страница админки
         Route::get('/', [MainController::class, 'index'])->name('index');
 
+        Route::get('test', [TestController::class, 'index'])->name('test');
+
         // Превью slug (Str::slug как на сервере) для автозаполнения в формах
         Route::get('slug-preview', function (\Illuminate\Http\Request $request) {
             return response()->json([
@@ -45,7 +55,10 @@ Route::prefix('admin')
         // Ресурсы
         Route::resource('categories', CategoryController::class)->except(['show']);
         Route::resource('languages', LanguageController::class)->except(['show']);
+        Route::post('prompt-categories/{id}/raw-data', [PromptCategoryController::class, 'updateRawData'])->name('prompt-categories.update-raw-data');
+        Route::resource('prompt-categories', PromptCategoryController::class)->except(['show']);
         Route::resource('products', ProductController::class)->except(['show']);
+        Route::resource('prompts', PromptController::class)->except(['show']);
         Route::resource('manufacturers', ManufacturerController::class)->except(['show']);
         
         // Только для админов
@@ -59,6 +72,9 @@ Route::prefix('admin')
             ->name('products.check_ai_status');
 
         Route::post('products/generate-ai', [ProductController::class, 'generateAi'])->name('products.generate_ai');
+        Route::post('products/{product}/publish-wordpress', [WordPressController::class, 'publish'])->name('products.publish_wordpress');
+
+        Route::post('products/extract-text', [ProductController::class, 'extractText'])->name('products.extract_text');
 
 // тест аи подключения
         // --- ТЕСТ OpenAI (Потом удалим) ---

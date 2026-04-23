@@ -195,25 +195,43 @@
                     <li class="nav-item">
                         <a href="{{ route('admin.categories.index') }}" class="nav-link">
                             <i class="nav-icon fas fa-tags"></i>
-                            <p>Categories</p>
+                            <p>Категории</p>
                         </a>
                     </li>
                     <li class="nav-item">
                         <a href="{{ route('admin.products.index') }}" class="nav-link">
                             <i class="nav-icon fas fa-box"></i>
-                            <p>Товары</p>
+                            <p>Посты</p>
+                        </a>
+                    </li>
+                    <li class="nav-item d-none">
+                        <a href="{{ route('admin.prompts.index') }}" class="nav-link">
+                            <i class="nav-icon fas fa-terminal"></i>
+                            <p>Промты</p>
                         </a>
                     </li>
                     <li class="nav-item">
                         <a href="{{ route('admin.manufacturers.index') }}" class="nav-link">
                             <i class="nav-icon fas fa-industry"></i>
-                            <p>Производители</p>
+                            <p>Сайты</p>
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="{{ route('admin.prompt-categories.index') }}" class="nav-link">
+                            <i class="nav-icon fas fa-folder-open"></i>
+                            <p>Категории промтов</p>
+                        </a>
+                    </li>
+                    <li class="nav-item d-none">
                         <a href="{{ route('catalog.index') }}" class="nav-link" target="_blank">
                             <i class="nav-icon fas fa-store"></i>
                             <p>Витрина</p>
+                        </a>
+                    </li>
+                    <li class="nav-item d-none">
+                        <a href="{{ route('prompt-catalog.index') }}" class="nav-link" target="_blank">
+                            <i class="nav-icon fas fa-language"></i>
+                            <p>Витрина промтов</p>
                         </a>
                     </li>
                     <li class="nav-item">

@@ -41,6 +41,8 @@ return [
     */
     'openai' => [
         'key' => env('OPENAI_API_KEY'),
+        /** Список ключей через запятую (ротация); дублирует OPENAI_API_KEYS для config:cache. */
+        'keys_csv' => env('OPENAI_API_KEYS', ''),
         'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
         'max_output_tokens' => (int) env('OPENAI_MAX_OUTPUT_TOKENS', 16384),
         'ai_article_min_chars' => (int) env('OPENAI_AI_ARTICLE_MIN_CHARS', 2500),
@@ -51,6 +53,28 @@ return [
     'gemini' => [
         'key' => env('GEMINI_API_KEY'),
         'model' => env('GEMINI_MODEL', 'gemini-2.5-flash'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | WordPress: общий секрет (API key) для входящего webhook
+    |--------------------------------------------------------------------------
+    |
+    | Что это: одна и та же длинная случайная строка (как пароль), известная
+    | только вашему Laravel и вашему WordPress. Laravel кладёт её в HTTP-заголовок
+    | X-Laravel-Api-Key при POST на /wp-json/my-api/v1/create. WordPress в
+    | permission_callback сравнивает заголовок с константой LARAVEL_API_KEY
+    | в wp-config.php через hash_equals() (безопасное сравнение, без утечки по времени).
+    |
+    | Зачем: без этого любой в интернете мог бы дергать ваш REST-маршрут и создавать
+    | посты. Это не шифрование тела запроса — только доказательство «запрос от своего сервера».
+    |
+    | Где задать: .env на стороне Laravel → WORDPRESS_WEBHOOK_SECRET=...
+    | На стороне WP: define('LARAVEL_API_KEY', 'тот же текст');
+    |
+    */
+    'wordpress' => [
+        'webhook_secret' => env('WORDPRESS_WEBHOOK_SECRET'),
     ],
 
 ];

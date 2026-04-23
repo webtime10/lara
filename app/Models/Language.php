@@ -30,6 +30,16 @@ class Language extends Model
         return $this->hasMany(CategoryDescription::class);
     }
 
+    public function promptCategoryDescriptions(): HasMany
+    {
+        return $this->hasMany(PromptCategoryDescription::class);
+    }
+
+    public function promptDescriptions(): HasMany
+    {
+        return $this->hasMany(PromptDescription::class);
+    }
+
     public static function getActive()
     {
         return static::where('is_active', true)
