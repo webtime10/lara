@@ -11,6 +11,16 @@ class ProductDescription extends Model
         'ai_text_about_the_country' => 'Текст о стране',
         'ai_seasons_line' => 'Линейка сезонов',
         'ai_faq' => 'FAQ',
+        'ai_regions_comparison' => 'Сравнение регионов',
+        'ai_attractions_slider' => 'Атракционы',
+        'ai_route_one_day' => 'Маршрут на день',
+        'ai_price_table' => 'Таблица цен',
+        'ai_expert_advice' => 'Советы экспертов',
+        'ai_expert' => 'Мнение экпертов',
+        'ai_active' => 'Активный отдых',
+        'ai_where_to_stay' => 'Где остановится',
+        'ai_parking' => 'Паркинг',
+        'ai_tourist_reviews' => 'Отзывы туристов',
     ];
 
 
@@ -23,6 +33,10 @@ class ProductDescription extends Model
         'ai_text_about_the_country',
         'ai_seasons_line',
         'ai_faq',
+        'ai_regions_comparison',
+        'ai_attractions_slider',
+        'ai_route_one_day',
+        'ai_active_otd',
         'tag',
         'meta_title',
         'meta_description',

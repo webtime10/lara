@@ -10,7 +10,7 @@
                 <div class="col-sm-6">
                     <ol class="breadcrumb float-sm-right">
                         <li class="breadcrumb-item"><a href="{{ route('admin.index') }}">Home</a></li>
-                        <li class="breadcrumb-item active">Категории промтов</li>
+                        <li class="breadcrumb-item active">Промты</li>
                     </ol>
                 </div>
             </div>
@@ -21,7 +21,7 @@
         <div class="container-fluid">
             <div class="card">
                 <div class="card-header">
-                    <a href="{{ route('admin.prompt-categories.create') }}" class="btn btn-primary float-right">Добавить категорию</a>
+                    <a href="{{ route('admin.prompt-categories.create') }}" class="btn btn-primary float-right">Добавить промпт</a>
                 </div>
                 <div class="card-body table-responsive p-0">
                     <table class="table table-hover">
@@ -52,7 +52,7 @@
                                     <td>{{ $item->status ? 'Да' : 'Нет' }}</td>
                                     <td>
                                         <a href="{{ route('admin.prompt-categories.edit', $item->id) }}" class="btn btn-sm btn-info">Изм.</a>
-                                        <form action="{{ route('admin.prompt-categories.destroy', $item->id) }}" method="post" class="d-inline" onsubmit="return confirm('Удалить категорию?');">
+                                        <form action="{{ route('admin.prompt-categories.destroy', $item->id) }}" method="post" class="d-inline" onsubmit="return confirm('Удалить промпт?');">
                                             @csrf
                                             @method('DELETE')
                                             <button type="submit" class="btn btn-sm btn-danger">Удал.</button>
@@ -61,7 +61,7 @@
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="7" class="text-center">Нет категорий</td>
+                                    <td colspan="7" class="text-center">Нет промптов</td>
                                 </tr>
                             @endforelse
                         </tbody>
@@ -86,7 +86,7 @@
                             </button>
                         </form>
                     @else
-                        <p class="text-muted mb-0">Нет категорий для редактирования нотации к сырью.</p>
+                        <p class="text-muted mb-0">Нет промптов для редактирования нотации к сырью.</p>
                     @endif
                 </div>
             </div>

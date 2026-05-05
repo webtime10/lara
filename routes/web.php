@@ -10,19 +10,22 @@ use App\Http\Controllers\Admin\RoleController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\WordPressController;
 use App\Http\Controllers\Auth\AdminLoginController;
-use App\Http\Controllers\Catalog\CatalogController;
-use App\Http\Controllers\Catalog\PromptCatalogController;
 use App\Http\Controllers\Admin\TestController;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 
-// Витрина (как каталог OpenCart)
-Route::get('/', [CatalogController::class, 'index'])->name('catalog.index');
-Route::get('/category/{slug}', [CatalogController::class, 'category'])->name('catalog.category');
-Route::get('/product/{slug}', [CatalogController::class, 'product'])->name('catalog.product');
-Route::get('/prompts', [PromptCatalogController::class, 'index'])->name('prompt-catalog.index');
-Route::get('/prompt-category/{slug}', [PromptCatalogController::class, 'category'])->name('prompt-catalog.category');
-Route::get('/prompt/{slug}', [PromptCatalogController::class, 'prompt'])->name('prompt-catalog.prompt');
+// Фронт: только ссылка на вход в админку
+Route::get('/', function () {
+    return redirect()->route('login');
+});
+
+Route::get('/catalog', function () {
+    return redirect()->route('login');
+})->name('catalog.index');
+
+Route::get('/prompt-catalog', function () {
+    return redirect()->route('login');
+})->name('prompt-catalog.index');
 
 // --- АВТОРИЗАЦИЯ ---
 // Страница входа и обработка формы
@@ -58,6 +61,7 @@ Route::prefix('admin')
         Route::post('prompt-categories/{id}/raw-data', [PromptCategoryController::class, 'updateRawData'])->name('prompt-categories.update-raw-data');
         Route::resource('prompt-categories', PromptCategoryController::class)->except(['show']);
         Route::resource('products', ProductController::class)->except(['show']);
+        Route::delete('products', [ProductController::class, 'bulkDestroy'])->name('products.bulk_destroy');
         Route::resource('prompts', PromptController::class)->except(['show']);
         Route::resource('manufacturers', ManufacturerController::class)->except(['show']);
         

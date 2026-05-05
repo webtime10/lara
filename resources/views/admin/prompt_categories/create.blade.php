@@ -4,12 +4,12 @@
     <section class="content-header">
         <div class="container-fluid">
             <div class="row mb-2">
-                <div class="col-sm-6"><h1>Новая категория промтов</h1></div>
+                <div class="col-sm-6"><h1>Создание промпта</h1></div>
                 <div class="col-sm-6">
                     <ol class="breadcrumb float-sm-right">
                         <li class="breadcrumb-item"><a href="{{ route('admin.index') }}">Home</a></li>
-                        <li class="breadcrumb-item"><a href="{{ route('admin.prompt-categories.index') }}">Категории промтов</a></li>
-                        <li class="breadcrumb-item active">Создание</li>
+                        <li class="breadcrumb-item"><a href="{{ route('admin.prompt-categories.index') }}">Промты</a></li>
+                        <li class="breadcrumb-item active">Создание промпта</li>
                     </ol>
                 </div>
             </div>
@@ -39,44 +39,37 @@
                                 @php $c = $language->code; @endphp
                                 <div class="tab-pane fade {{ $index === 0 ? 'show active' : '' }}" id="lang-cat-{{ $language->id }}">
                                     <div class="form-group">
-                                        <label for="name_{{ $c }}">Название @if($language->is_default)<span class="text-danger">*</span>@endif</label>
-                                        <input type="text" name="name_{{ $c }}" id="name_{{ $c }}" class="form-control @error('name_'.$c) is-invalid @enderror" value="{{ old('name_'.$c) }}" {{ $language->is_default ? 'required' : '' }}>
+                                        <label for="name_{{ $c }}">Название <span class="text-danger">*</span></label>
+                                        <input type="text" name="name_{{ $c }}" id="name_{{ $c }}" class="form-control @error('name_'.$c) is-invalid @enderror" value="{{ old('name_'.$c) }}">
                                         @error('name_'.$c)<div class="invalid-feedback">{{ $message }}</div>@enderror
                                     </div>
                                     <div class="form-group">
-                                        <label for="description_{{ $c }}">Описание</label>
-                                        <textarea name="description_{{ $c }}" id="description_{{ $c }}" class="form-control" rows="4">{{ old('description_'.$c) }}</textarea>
+                                        <label for="description_{{ $c }}">Stage 1 описание</label>
+                                        <textarea name="description_{{ $c }}" id="description_{{ $c }}" class="form-control @error('description_'.$c) is-invalid @enderror" rows="4">{{ old('description_'.$c) }}</textarea>
+                                        @error('description_'.$c)<div class="invalid-feedback">{{ $message }}</div>@enderror
                                     </div>
                                     <div class="form-group">
                                         <label for="stage_2_live_{{ $c }}">Stage 2 live</label>
-                                        <textarea name="stage_2_live_{{ $c }}" id="stage_2_live_{{ $c }}" class="form-control" rows="8">{{ old('stage_2_live_'.$c) }}</textarea>
+                                        <textarea name="stage_2_live_{{ $c }}" id="stage_2_live_{{ $c }}" class="form-control @error('stage_2_live_'.$c) is-invalid @enderror" rows="8">{{ old('stage_2_live_'.$c) }}</textarea>
+                                        @error('stage_2_live_'.$c)<div class="invalid-feedback">{{ $message }}</div>@enderror
                                     </div>
                                     <div class="form-group mb-0">
                                         <label for="stage_3_edit_{{ $c }}">Stage 3 edit</label>
-                                        <textarea name="stage_3_edit_{{ $c }}" id="stage_3_edit_{{ $c }}" class="form-control" rows="8">{{ old('stage_3_edit_'.$c) }}</textarea>
+                                        <textarea name="stage_3_edit_{{ $c }}" id="stage_3_edit_{{ $c }}" class="form-control @error('stage_3_edit_'.$c) is-invalid @enderror" rows="8">{{ old('stage_3_edit_'.$c) }}</textarea>
+                                        @error('stage_3_edit_'.$c)<div class="invalid-feedback">{{ $message }}</div>@enderror
                                     </div>
                                 </div>
                             @endforeach
                         </div>
 
-                        <div class="form-group">
+                        {{-- <div class="form-group">
                             <label for="stage_1_extraction">Stage 1 extraction</label>
                             <textarea name="stage_1_extraction" id="stage_1_extraction" class="form-control" rows="8">{{ old('stage_1_extraction') }}</textarea>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="parent_id">Родительская категория</label>
-                            <select name="parent_id" id="parent_id" class="form-control">
-                                <option value="">— В корне —</option>
-                                @foreach($parentOptions as $option)
-                                    <option value="{{ $option['id'] }}" {{ (string) old('parent_id') === (string) $option['id'] ? 'selected' : '' }}>{{ $option['label'] }}</option>
-                                @endforeach
-                            </select>
-                        </div>
+                        </div> --}}
 
                         <div class="form-group">
                             <label for="manufacturer_id">Сайт</label>
-                            <select name="manufacturer_id" id="manufacturer_id" class="form-control">
+                            <select name="manufacturer_id" id="manufacturer_id" class="form-control @error('manufacturer_id') is-invalid @enderror">
                                 <option value="">— Не выбран —</option>
                                 @foreach($manufacturers as $manufacturer)
                                     <option value="{{ $manufacturer->id }}" {{ (string) old('manufacturer_id') === (string) $manufacturer->id ? 'selected' : '' }}>
@@ -84,6 +77,7 @@
                                     </option>
                                 @endforeach
                             </select>
+                            @error('manufacturer_id')<div class="invalid-feedback">{{ $message }}</div>@enderror
                         </div>
 
                         <div class="form-group">
@@ -112,7 +106,8 @@
 
                         <div class="form-group">
                             <label for="sort_order">Порядок сортировки</label>
-                            <input type="number" name="sort_order" id="sort_order" class="form-control" value="{{ old('sort_order', 0) }}" min="0" style="max-width: 12rem;">
+                            <input type="number" name="sort_order" id="sort_order" class="form-control @error('sort_order') is-invalid @enderror" value="{{ old('sort_order', 0) }}" style="max-width: 12rem;">
+                            @error('sort_order')<div class="invalid-feedback">{{ $message }}</div>@enderror
                         </div>
 
                         <div class="form-group mb-0">

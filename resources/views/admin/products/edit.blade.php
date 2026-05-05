@@ -52,11 +52,11 @@
                     - отправляется на маршрут admin.products.update (метод PUT в ProductController@update);
                     - НЕ отвечает за запуск AI — за это отвечает AJAX‑скрипт ниже.
                 --}}
-                <form id="productForm" action="{{ route('admin.products.update', $product->id) }}" method="post">
+                <form id="productForm" action="{{ route('admin.products.update', $product->id) }}" method="post" novalidate>
                     @csrf @method('PUT')
                     <div class="card-body">
                         @if ($errors->any())
-                            <div class="alert alert-danger"><ul class="mb-0">@foreach ($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul></div>
+                            <div class="alert alert-danger mb-3">{{ $errors->first() }}</div>
                         @endif
 
                         {{-- 
@@ -66,37 +66,30 @@
                         --}}
                         @php $sel = old('category_ids', $product->categories->pluck('id')->all()); @endphp
                         <div class="form-group">
-                            <label>Категории <span class="text-danger">*</span></label>
-                            <div style="max-height:200px;overflow:auto;border:1px solid #ddd;padding:10px;border-radius:4px;">
+                            <label for="category_ids">Категория <span class="text-danger">*</span></label>
+                            <select name="category_ids[]" id="category_ids" class="form-control" required>
+                                <option value="">— Выберите категорию —</option>
                                 @foreach($categories as $cat)
                                     @php $d = $defaultLanguage ? $cat->descriptions->firstWhere('language_id', $defaultLanguage->id) : null; @endphp
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" name="category_ids[]" value="{{ $cat->id }}" id="c{{ $cat->id }}"
-                                            {{ in_array($cat->id, $sel) ? 'checked' : '' }}>
-                                        <label class="form-check-label" for="c{{ $cat->id }}">{{ $d->name ?? '#'.$cat->id }}</label>
-                                    </div>
+                                    <option value="{{ $cat->id }}" {{ in_array($cat->id, $sel) ? 'selected' : '' }}>
+                                        {{ $d->name ?? '#'.$cat->id }}
+                                    </option>
                                 @endforeach
-                            </div>
+                            </select>
                         </div>
 
-                        {{-- Блок параметров поста: модель, SKU и сайт --}}
+                        {{-- Блок параметров поста: модель и сайт --}}
                         <div class="row">
-                            <div class="col-md-4">
+                            <div class="col-md-6">
                                 <div class="form-group">
                                     <label for="model">Model <span class="text-danger">*</span></label>
                                     <input type="text" name="model" id="model" class="form-control" value="{{ old('model', $product->model) }}" required maxlength="64">
                                 </div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-6">
                                 <div class="form-group">
-                                    <label for="sku">SKU</label>
-                                    <input type="text" name="sku" id="sku" class="form-control" value="{{ old('sku', $product->sku) }}" maxlength="64">
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <div class="form-group">
-                                    <label for="manufacturer_id">Сайт</label>
-                                    <select name="manufacturer_id" id="manufacturer_id" class="form-control">
+                                    <label for="manufacturer_id">Сайт <span class="text-danger">*</span></label>
+                                    <select name="manufacturer_id" id="manufacturer_id" class="form-control" required>
                                         <option value="">—</option>
                                         @foreach($manufacturers as $m)
                                             <option value="{{ $m->id }}" {{ old('manufacturer_id', $product->manufacturer_id) == $m->id ? 'selected' : '' }}>{{ $m->name }}</option>
@@ -133,13 +126,13 @@
                                 <div class="tab-pane fade {{ $i === 0 ? 'show active' : '' }}" id="lang{{ $language->id }}">
                                     <div class="form-group">
                                        
-                                        <label for="name_{{ $c }}">Название</label>
-                                        <input type="text" name="name_{{ $c }}" id="name_{{ $c }}" class="form-control" value="{{ old('name_'.$c, $desc->name ?? '') }}" {{ $language->is_default ? 'required' : '' }}>
+                                        <label for="name_{{ $c }}">Название <span class="text-danger">*</span></label>
+                                        <input type="text" name="name_{{ $c }}" id="name_{{ $c }}" class="form-control" value="{{ old('name_'.$c, $desc->name ?? '') }}" required>
                                     </div>
                                     <div class="form-group">
-                                        <label for="slug_{{ $c }}">Slug</label>
+                                        <label for="slug_{{ $c }}">Slug <span class="text-danger">*</span></label>
                                         <input type="text" name="slug_{{ $c }}" id="slug_{{ $c }}" class="form-control" value="{{ old('slug_'.$c, $desc->slug ?? '') }}"
-                                               data-slug-locked="{{ ($desc && ($desc->slug ?? '') !== '') ? '1' : '0' }}" autocomplete="off">
+                                               data-slug-locked="{{ ($desc && ($desc->slug ?? '') !== '') ? '1' : '0' }}" autocomplete="off" required>
                                         <small class="form-text text-muted">Пустой — из названия. Очистите поле, чтобы снова подтягивать из названия.</small>
                                     </div>
                                    <!-- <div class="form-group">
@@ -240,14 +233,23 @@
           где создаётся job TranslateProductJob и отправляется в очередь (Redis).
     --}}
     @php
-        $aiCheckExpectedLanguages = config('ai.generation.expected_languages', ['ru', 'en', 'he', 'ar']);
+        $aiCheckExpectedLanguages = collect($languages ?? [])
+            ->pluck('code')
+            ->map(fn ($code) => strtolower((string) $code))
+            ->filter()
+            ->values()
+            ->all();
+        if ($aiCheckExpectedLanguages === []) {
+            $aiCheckExpectedLanguages = config('ai.generation.expected_languages', ['ru', 'en', 'he', 'ar']);
+        }
     @endphp
     <script>
     
-    // jQuery(document).ready — выполняем весь код ниже после построения DOM (поля формы уже в дереве).
+    
     $(function () {
         // Кэшируем jQuery-обёртку textarea «исходное сырьё для AI» (id задан в разметке выше).
         var $sourceTa = $('#source_text_input');
+        var generationDoneAlertShown = false;
         // Строка, которой временно подменяем содержимое поля на время чтения файла на сервере.
         var sourceFileReadMsg = 'Читаю файл, подождите...';
         // Вешаем обработчик на кнопку «Прикрепить файл» — сам input[type=file] скрыт (class d-none).
@@ -320,6 +322,8 @@
 
         var aiFieldKeys = @json(array_keys($aiFields));
         var indicatorSelector = '.ai-status-indicator[data-field="%FIELD%"] i';
+        var checkUrl = "{{ route('admin.products.check_ai_status', $product->id, false) }}";
+        var expectedLanguages = @json($aiCheckExpectedLanguages);
 
         function setFieldIndicatorState(field, status) {
             var $fieldIndicators = $(indicatorSelector.replace('%FIELD%', field));
@@ -330,9 +334,40 @@
                 $fieldIndicators.removeClass('text-warning text-danger text-secondary').addClass('text-success');
             } else if (status === 'error') {
                 $fieldIndicators.removeClass('text-warning text-success text-secondary').addClass('text-danger');
+            } else if (status === 'idle') {
+                $fieldIndicators.removeClass('text-warning text-success text-danger').addClass('text-secondary');
             } else {
-                $fieldIndicators.removeClass('text-success text-danger text-secondary').addClass('text-warning');
+                $fieldIndicators.removeClass('text-success text-danger text-secondary').addClass('text-warning'); // processing
             }
+        }
+
+        function setFieldIndicatorHint(field, payload) {
+            var $indicatorLink = $('.ai-status-indicator[data-field="' + field + '"]');
+            if (!$indicatorLink.length) {
+                return;
+            }
+
+            var status = (payload && payload.status) ? payload.status : 'idle';
+            var missingLanguages = (payload && Array.isArray(payload.missing_languages)) ? payload.missing_languages : [];
+            var errorReason = payload && payload.error_reason ? payload.error_reason : null;
+            var hint = '';
+
+            if (status === 'success') {
+                hint = 'Готово: поле заполнено по всем языкам.';
+            } else if (status === 'error') {
+                hint = 'Ошибка генерации' + (errorReason ? ' (' + errorReason + ')' : '') + '.';
+            } else if (status === 'processing') {
+                if (missingLanguages.length > 0) {
+                    hint = 'В процессе: нет данных для языков: ' + missingLanguages.join(', ');
+                } else {
+                    hint = 'В процессе генерации...';
+                }
+            } else {
+                hint = 'Ожидание запуска.';
+            }
+
+            $indicatorLink.attr('title', hint);
+            $indicatorLink.attr('data-original-title', hint);
         }
 
         function setAllIndicatorsState(status) {
@@ -341,10 +376,53 @@
             });
         }
 
+        function setFieldIndicatorFromPayload(field, payload) {
+            var status = (payload && payload.status) ? payload.status : 'idle';
+            var startedAt = payload ? payload.started_at : null;
+            var missingLanguages = (payload && Array.isArray(payload.missing_languages)) ? payload.missing_languages : [];
+            var allLanguagesMissing = expectedLanguages.length > 0 && missingLanguages.length === expectedLanguages.length;
+
+            // Серый только когда поле вообще не начато (нет старта и отсутствуют данные по всем языкам).
+            if (status === 'processing' && !startedAt && allLanguagesMissing) {
+                setFieldIndicatorState(field, 'idle');
+                setFieldIndicatorHint(field, { status: 'idle' });
+                return;
+            }
+
+            // Если часть языков уже заполнена, но не все — это процесс (желтый), не idle (серый).
+            setFieldIndicatorState(field, status);
+            setFieldIndicatorHint(field, payload || { status: status });
+        }
+
+        // Начальное состояние до запроса статуса: серый.
+        setAllIndicatorsState('idle');
+
+        // При загрузке страницы сразу синхронизируем цвета с фактическим состоянием в БД/кэше.
+        $.ajax({
+            url: checkUrl,
+            method: 'GET',
+            data: {
+                languages: expectedLanguages
+            },
+            dataType: 'json',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json'
+            }
+        }).done(function (res) {
+            if (res && res.fields) {
+                aiFieldKeys.forEach(function (field) {
+                    var fieldPayload = res.fields[field] || {};
+                    setFieldIndicatorFromPayload(field, fieldPayload);
+                });
+            }
+        });
+
         // Клик по «Сгенерировать контент для всех языков» — старт генерации по всем AI-полям сразу.
         $('#btn-generate-ai').on('click', function () {
+            generationDoneAlertShown = false;
 
-            // Сырьё для AI: Source или, если он пустой, поле «Результат» (как на бэкенде при сохранении в product_descriptions.result).
+            // Для генерации используем только «Исходное сырьё».
             var sourceText = $('#source_text_input').val();
             var resultText = $('#result_textarea').val();
             // this внутри handler — сама нажатая кнопка; оборачиваем в jQuery для .prop и т.д.
@@ -352,10 +430,9 @@
             // Тот же спиннер, что и в обработчике change селекта.
             var $loader = $('#ai-loader');
 
-            // Минимум 10 символов: достаточно заполнить Source или только Result.
-            var rawForAi = $.trim(sourceText || '') || $.trim(resultText || '');
-            if (!rawForAi || rawForAi.length < 10) {
-                alert('Слишком короткий текст для генерации. Заполните «Исходное сырьё» или «Результат» (не меньше 10 символов).');
+            var rawForAi = $.trim(sourceText || '');
+            if (!rawForAi) {
+                alert('Вставьте текст в поле «Исходное сырьё».');
                 return;
             }
             // Если в конфиге нет ai-полей — не отправляем запрос.
@@ -407,27 +484,36 @@
     // Ссылка на проверку (маршрут, который ты добавил в web.php)
 // заходит в метод проверок и узнает состояние светафора
 
-    var checkUrl = "{{ route('admin.products.check_ai_status', $product->id, false) }}";
-    
-    // Опрос: зелёный только если в БД появился новый контент по всем AI-полям.
+    // Опрос статуса: мгновенная первая проверка + регулярный polling.
     var pollAttempts = 0;
+    var pollErrorStreak = 0;
     {{-- Интервал 5 с; держим опрос дольше server-side таймаута (config ai.generation.timeout_seconds) --}}
     var maxPollAttempts = {{ (int) ceil((int) config('ai.generation.timeout_seconds', 3600) / 5) + 120 }};
-    var pollTimer = setInterval(function () {
+    var pollTimer = null;
+
+    function stopPolling() {
+        if (pollTimer !== null) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    function requestGenerationStatus() {
         pollAttempts += 1;
         if (pollAttempts > maxPollAttempts) {
-            clearInterval(pollTimer);
+            stopPolling();
             setAllIndicatorsState('error');
             alert('Генерация не завершилась за отведённое время. Проверьте логи (очередь, OPENAI_API_KEY / php artisan config:clear).');
             $('#btn-generate-ai').prop('disabled', false);
             $('#ai-loader').hide();
             return;
         }
+
         $.ajax({
             url: checkUrl,
             method: 'GET',
             data: {
-                languages: @json($aiCheckExpectedLanguages)
+                languages: expectedLanguages
             },
             dataType: 'json',
             headers: {
@@ -435,15 +521,16 @@
                 'Accept': 'application/json'
             },
             success: function (res) {
+                pollErrorStreak = 0;
                 if (res && res.fields) {
                     aiFieldKeys.forEach(function(field) {
                         var fieldPayload = res.fields[field] || {};
-                        setFieldIndicatorState(field, fieldPayload.status || 'processing');
+                        setFieldIndicatorFromPayload(field, fieldPayload);
                     });
                 }
 
                 if (res && res.status === 'error') {
-                    clearInterval(pollTimer);
+                    stopPolling();
                     var hintParts = [];
                     if (res.fields) {
                         aiFieldKeys.forEach(function (f) {
@@ -466,18 +553,29 @@
                     setAllIndicatorsState('success');
                     $('#btn-generate-ai').prop('disabled', false);
                     $('#ai-loader').hide();
-                    clearInterval(pollTimer);
+                    stopPolling();
+                    if (!generationDoneAlertShown) {
+                        generationDoneAlertShown = true;
+                        $('#generation-done-modal').modal('show');
+                    }
                 }
             },
             error: function (xhr) {
-                clearInterval(pollTimer);
+                pollErrorStreak += 1;
+                if (pollErrorStreak < 3) {
+                    return;
+                }
+                stopPolling();
                 setAllIndicatorsState('error');
                 alert('Ошибка проверки статуса: ' + xhr.status);
                 $('#btn-generate-ai').prop('disabled', false);
                 $('#ai-loader').hide();
             }
         });
-    }, 5000); // интервал опроса статуса
+    }
+
+    requestGenerationStatus(); // первая проверка сразу, без ожидания 5 секунд
+    pollTimer = setInterval(requestGenerationStatus, 5000); // интервал опроса статуса
 })
                 // ОТВЕТ С ОШИБКОЙ (например, валидация, 500, проблемы с Redis/OpenAI и т.п.)
                 .fail(function (xhr) {
@@ -497,7 +595,28 @@
 
 */   
     </script>
+
+    <div class="modal fade" id="generation-done-modal" tabindex="-1" role="dialog" aria-labelledby="generationDoneModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="generationDoneModalLabel">Готово</h5>
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    Работа завершена: все поля заполнены.
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" id="generation-done-ok-btn">ok</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
 <script>
+        /* отправка на вордрпрес */
 $(function () {
     var wpButtonHtml = '<i class="fab fa-wordpress"></i> WordPress';
 
@@ -526,6 +645,14 @@ $(function () {
                 alert('Error: ' + msg);
                 $btn.prop('disabled', false).html(wpButtonHtml);
             });
+    });
+});
+</script>
+
+<script>
+$(function () {
+    $('#generation-done-ok-btn').on('click', function () {
+        location.reload();
     });
 });
 </script>

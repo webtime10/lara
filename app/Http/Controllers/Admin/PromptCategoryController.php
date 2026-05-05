@@ -19,7 +19,7 @@ class PromptCategoryController extends Controller
 
     public function index()
     {
-        $pageTitle = 'Категории промтов';
+        $pageTitle = 'Промты';
         $defaultLanguage = Language::getDefault();
         $aiFieldOptions = ProductDescription::aiFieldLabels();
         $categories = PromptCategory::with(['parent.descriptions', 'descriptions', 'manufacturer'])
@@ -34,22 +34,17 @@ class PromptCategoryController extends Controller
 
     public function create()
     {
-        $pageTitle = 'Категории промтов - Создание';
+        $pageTitle = 'Промты - Создание промпта';
         $languages = Language::forAdminForms();
         $defaultLanguage = Language::getDefault();
-        $parentOptions = PromptCategory::treeForParentSelect($defaultLanguage, []);
         $manufacturers = Manufacturer::query()->orderBy('sort_order')->orderBy('name')->get();
         $aiFieldOptions = ProductDescription::aiFieldLabels();
 
-        return view('admin.prompt_categories.create', compact('pageTitle', 'languages', 'defaultLanguage', 'parentOptions', 'manufacturers', 'aiFieldOptions'));
+        return view('admin.prompt_categories.create', compact('pageTitle', 'languages', 'defaultLanguage', 'manufacturers', 'aiFieldOptions'));
     }
 
     public function store(Request $request)
     {
-        $request->merge([
-            'parent_id' => $request->filled('parent_id') ? (int) $request->parent_id : null,
-        ]);
-
         $languages = Language::forAdminForms();
         if ($languages->isEmpty()) {
             return redirect()->route('admin.languages.index')
@@ -57,9 +52,8 @@ class PromptCategoryController extends Controller
         }
 
         $rules = [
-            'parent_id' => ['nullable', 'integer', 'exists:prompt_categories,id'],
-            'manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
-            'ai_field' => ['nullable', Rule::in(ProductDescription::aiFieldKeys())],
+            'manufacturer_id' => ['required', 'exists:manufacturers,id'],
+            'ai_field' => ['required', Rule::in(ProductDescription::aiFieldKeys())],
             'row_data' => ['nullable', 'string'],
             'stage_1_extraction' => ['nullable', 'string'],
             'sort_order' => ['nullable', 'integer', 'min:0'],
@@ -68,16 +62,16 @@ class PromptCategoryController extends Controller
 
         foreach ($languages as $language) {
             $suffix = $language->code;
-            $rules['name_'.$suffix] = $language->is_default ? 'required|string|max:255' : 'nullable|string|max:255';
+            $rules['name_'.$suffix] = 'required|string|max:255';
             $rules['slug_'.$suffix] = [
-                $language->is_default ? 'required' : 'nullable',
+                'required',
                 'string',
                 'max:255',
                 Rule::unique('prompt_category_descriptions', 'slug')->where('language_id', $language->id),
             ];
-            $rules['description_'.$suffix] = 'nullable|string';
-            $rules['stage_2_live_'.$suffix] = 'nullable|string';
-            $rules['stage_3_edit_'.$suffix] = 'nullable|string';
+            $rules['description_'.$suffix] = 'required|string';
+            $rules['stage_2_live_'.$suffix] = 'required|string';
+            $rules['stage_3_edit_'.$suffix] = 'required|string';
         }
 
         $this->mergeLocalizedSlugsFromRequest($request, $languages);
@@ -85,7 +79,6 @@ class PromptCategoryController extends Controller
 
         DB::transaction(function () use ($request, $languages) {
             $category = PromptCategory::create([
-                'parent_id' => $request->input('parent_id'),
                 'manufacturer_id' => $request->input('manufacturer_id'),
                 'ai_field' => $request->input('ai_field'),
                 'row_data' => $request->input('row_data'),
@@ -125,29 +118,23 @@ class PromptCategoryController extends Controller
             PromptCategory::rebuildPaths();
         });
 
-        return redirect()->route('admin.prompt-categories.index')->with('success', 'Категория промтов создана');
+        return redirect()->route('admin.prompt-categories.index')->with('success', 'Промпт создан');
     }
 
     public function edit(string $id)
     {
-        $pageTitle = 'Категории промтов - Редактирование';
+        $pageTitle = 'Промты - Редактирование промпта';
         $category = PromptCategory::with('descriptions')->findOrFail($id);
         $languages = Language::forAdminForms();
         $defaultLanguage = Language::getDefault();
-        $excludeIds = array_merge([(int) $category->id], $category->descendantIdList());
-        $parentOptions = PromptCategory::treeForParentSelect($defaultLanguage, $excludeIds);
         $manufacturers = Manufacturer::query()->orderBy('sort_order')->orderBy('name')->get();
         $aiFieldOptions = ProductDescription::aiFieldLabels();
 
-        return view('admin.prompt_categories.edit', compact('pageTitle', 'category', 'languages', 'defaultLanguage', 'parentOptions', 'manufacturers', 'aiFieldOptions'));
+        return view('admin.prompt_categories.edit', compact('pageTitle', 'category', 'languages', 'defaultLanguage', 'manufacturers', 'aiFieldOptions'));
     }
 
     public function update(Request $request, string $id)
     {
-        $request->merge([
-            'parent_id' => $request->filled('parent_id') ? (int) $request->parent_id : null,
-        ]);
-
         $category = PromptCategory::with('descriptions')->findOrFail($id);
         $languages = Language::forAdminForms();
         if ($languages->isEmpty()) {
@@ -156,14 +143,8 @@ class PromptCategoryController extends Controller
         }
 
         $rules = [
-            'parent_id' => [
-                'nullable',
-                'integer',
-                'exists:prompt_categories,id',
-                Rule::notIn(array_merge([(int) $category->id], $category->descendantIdList())),
-            ],
-            'manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
-            'ai_field' => ['nullable', Rule::in(ProductDescription::aiFieldKeys())],
+            'manufacturer_id' => ['required', 'exists:manufacturers,id'],
+            'ai_field' => ['required', Rule::in(ProductDescription::aiFieldKeys())],
             'row_data' => ['nullable', 'string'],
             'stage_1_extraction' => ['nullable', 'string'],
             'sort_order' => ['nullable', 'integer', 'min:0'],
@@ -173,18 +154,18 @@ class PromptCategoryController extends Controller
         foreach ($languages as $language) {
             $suffix = $language->code;
             $description = $category->descriptions->firstWhere('language_id', $language->id);
-            $rules['name_'.$suffix] = $language->is_default ? 'required|string|max:255' : 'nullable|string|max:255';
+            $rules['name_'.$suffix] = 'required|string|max:255';
             $rules['slug_'.$suffix] = [
-                $language->is_default ? 'required' : 'nullable',
+                'required',
                 'string',
                 'max:255',
                 Rule::unique('prompt_category_descriptions', 'slug')
                     ->where('language_id', $language->id)
                     ->ignore($description?->id),
             ];
-            $rules['description_'.$suffix] = 'nullable|string';
-            $rules['stage_2_live_'.$suffix] = 'nullable|string';
-            $rules['stage_3_edit_'.$suffix] = 'nullable|string';
+            $rules['description_'.$suffix] = 'required|string';
+            $rules['stage_2_live_'.$suffix] = 'required|string';
+            $rules['stage_3_edit_'.$suffix] = 'required|string';
         }
 
         $this->mergeLocalizedSlugsFromRequest($request, $languages);
@@ -192,7 +173,6 @@ class PromptCategoryController extends Controller
 
         DB::transaction(function () use ($request, $languages, $category) {
             $category->update([
-                'parent_id' => $request->input('parent_id'),
                 'manufacturer_id' => $request->input('manufacturer_id'),
                 'ai_field' => $request->input('ai_field'),
                 'row_data' => $request->input('row_data'),
@@ -239,7 +219,7 @@ class PromptCategoryController extends Controller
 
         return redirect()
             ->route('admin.prompt-categories.edit', $category->id)
-            ->with('success', 'Категория промтов обновлена');
+            ->with('success', 'Промпт обновлен');
     }
 
     public function destroy(string $id)
@@ -247,7 +227,7 @@ class PromptCategoryController extends Controller
         PromptCategory::findOrFail($id)->delete();
         PromptCategory::rebuildPaths();
 
-        return redirect()->route('admin.prompt-categories.index')->with('success', 'Категория промтов удалена');
+        return redirect()->route('admin.prompt-categories.index')->with('success', 'Промпт удален');
     }
 
     public function updateRawData(Request $request, string $id)

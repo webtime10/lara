@@ -28,47 +28,40 @@
                         </button>
                     </div>
                 </div>
-                <form id="productForm" action="{{ route('admin.products.store') }}" method="post">
+                <form id="productForm" action="{{ route('admin.products.store') }}" method="post" novalidate>
                     @csrf
                     <div class="card-body">
                         @if ($errors->any())
-                            <div class="alert alert-danger"><ul class="mb-0">@foreach ($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul></div>
+                            <div class="alert alert-danger mb-3">{{ $errors->first() }}</div>
                         @endif
                         @if($categories->isEmpty())
                             <p class="text-muted small mb-3">Категорий пока нет — можно <a href="{{ route('admin.categories.create') }}">создать категорию</a>, чтобы привязать пост.</p>
                         @endif
 
                         <div class="form-group">
-                            <label>Категории <span class="text-danger">*</span></label>
-                            <div style="max-height:200px;overflow:auto;border:1px solid #ddd;padding:10px;border-radius:4px;">
+                            <label for="category_ids">Категория <span class="text-danger">*</span></label>
+                            <select name="category_ids[]" id="category_ids" class="form-control" required>
+                                <option value="">— Выберите категорию —</option>
                                 @foreach($categories as $cat)
                                     @php $d = $defaultLanguage ? $cat->descriptions->firstWhere('language_id', $defaultLanguage->id) : null; @endphp
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" name="category_ids[]" value="{{ $cat->id }}" id="c{{ $cat->id }}"
-                                            {{ in_array($cat->id, old('category_ids', [])) ? 'checked' : '' }}>
-                                        <label class="form-check-label" for="c{{ $cat->id }}">{{ $d->name ?? '#'.$cat->id }}</label>
-                                    </div>
+                                    <option value="{{ $cat->id }}" {{ in_array($cat->id, old('category_ids', [])) ? 'selected' : '' }}>
+                                        {{ $d->name ?? '#'.$cat->id }}
+                                    </option>
                                 @endforeach
-                            </div>
+                            </select>
                         </div>
 
                         <div class="row">
-                            <div class="col-md-4">
+                            <div class="col-md-6">
                                 <div class="form-group">
                                     <label for="model">Model (артикул) <span class="text-danger">*</span></label>
-                                    <input type="text" name="model" id="model" class="form-control" value="{{ old('model') }}" required maxlength="64">
+                                    <input type="text" name="model" id="model" class="form-control" value="{{ $nextModel }}" required maxlength="64" autocomplete="off">
                                 </div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-6">
                                 <div class="form-group">
-                                    <label for="sku">SKU</label>
-                                    <input type="text" name="sku" id="sku" class="form-control" value="{{ old('sku') }}" maxlength="64">
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <div class="form-group">
-                                    <label for="manufacturer_id">Сайт</label>
-                                    <select name="manufacturer_id" id="manufacturer_id" class="form-control">
+                                    <label for="manufacturer_id">Сайт <span class="text-danger">*</span></label>
+                                    <select name="manufacturer_id" id="manufacturer_id" class="form-control" required>
                                         <option value="">—</option>
                                         @foreach($manufacturers as $m)
                                             <option value="{{ $m->id }}" {{ old('manufacturer_id') == $m->id ? 'selected' : '' }}>{{ $m->name }}</option>
@@ -93,12 +86,12 @@
                                 @php $c = $language->code; @endphp
                                 <div class="tab-pane fade {{ $i === 0 ? 'show active' : '' }}" id="lang{{ $language->id }}">
                                     <div class="form-group">
-                                        <label for="name_{{ $c }}">Название @if($language->is_default)<span class="text-danger">*</span>@endif</label>
-                                        <input type="text" name="name_{{ $c }}" id="name_{{ $c }}" class="form-control" value="{{ old('name_'.$c) }}" {{ $language->is_default ? 'required' : '' }}>
+                                        <label for="name_{{ $c }}">Название <span class="text-danger">*</span></label>
+                                        <input type="text" name="name_{{ $c }}" id="name_{{ $c }}" class="form-control" value="{{ old('name_'.$c) }}" required>
                                     </div>
                                     <div class="form-group">
-                                        <label for="slug_{{ $c }}">Slug @if($language->is_default)<span class="text-danger">*</span>@endif</label>
-                                        <input type="text" name="slug_{{ $c }}" id="slug_{{ $c }}" class="form-control" value="{{ old('slug_'.$c) }}" data-slug-locked="0" autocomplete="off">
+                                        <label for="slug_{{ $c }}">Slug <span class="text-danger">*</span></label>
+                                        <input type="text" name="slug_{{ $c }}" id="slug_{{ $c }}" class="form-control" value="{{ old('slug_'.$c) }}" data-slug-locked="0" autocomplete="off" required>
                                         <small class="form-text text-muted">Пустой — из названия (Str::slug). Свой текст — после нормализации.</small>
                                     </div>
                                 </div>
@@ -107,7 +100,7 @@
 
                         <div class="form-group mt-3">
                             <input type="hidden" name="status" value="0">
-                            <label><input type="checkbox" name="status" value="1" {{ old('status', true) ? 'checked' : '' }}> Активен (на витрине)</label>
+                            <label><input type="checkbox" name="status" value="1" {{ old('status', true) ? 'checked' : '' }}> Активен</label>
                         </div>
                     </div>
                 </form>

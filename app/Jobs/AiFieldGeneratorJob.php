@@ -19,41 +19,50 @@ use Throwable;
 
 class AiFieldGeneratorJob implements ShouldQueue
 {
+
+    //трейты Laravel, они добавляют поведение классу Job
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+//  "позволяет запускать Job через dispatch()"
+//  "даёт доступ к управлению задачей в очереди (delete, release и т.д.)"
+//  "добавляет настройки очереди (очередь, задержка, соединение)"
+//  "преобразует модели (например $product) в ID при передаче в очередь и восстанавливает их из БД"
 
     private const ECHO_PREFIX_LEN = 320;
+    // "длина начала текста (в символах), которую сравниваем с промптом,
+    // чтобы понять — AI не вернул ли сам промпт вместо результата"
+
 
     private const ECHO_SIMILARITY_THRESHOLD = 91.0;
+    // "порог схожести (%), при котором считаем,
+    // что ответ AI слишком похож на промпт (≈ ошибка генерации)"
+
 
     /** Должен покрывать 3×API на длинных текстах; см. config ai.generation.timeout_seconds для опроса UI. */
     public int $timeout = 3600;
-
+    // "максимальное время выполнения Job (в секундах)
+    
     public int $tries = 1;
+    // "сколько раз Laravel будет пытаться выполнить Job при ошибке
+    // 1 = НЕ повторять (упал → всё, ошибка)"
 
     public function __construct(
-        public Product $product,
-        public int $languageId,
-        public string $targetField,
-        public string $sourceText,
+        public Product $product,   // "модель товара; в очереди фактически передаётся его ID и потом он заново загружается из БД"
+        public int $languageId,    // "ID языка — определяет, для какой языковой версии (product_descriptions) идёт генерация"
+        public string $targetField,  // "название колонки в product_descriptions, куда будет записан результат (например ai_title)"
+        public string $sourceText, // "исходный текст (сырьё) для генерации; если пустой — будет взят из БД (result)"
         /** @var object Результат DB::selectOne по prompt_category_descriptions + join */
-        public object $prompts
+        public object $prompts // "объект промптов (инструкций), уже выбранный по полю + языку + производителю;  // содержит несколько этапов: description, stage_2_live, stage_3_edit"
     ) {}
 
-    public function handle(): void
+    public function handle(): void   // "основной метод Job: выполняет генерацию текста через AI (3 этапа) и сохраняет результат в БД"
     {
-        $ctx = $this->logContext();
-        $this->assertAllowedTargetField();
+        $ctx = $this->logContext(); // "формирует контекст для логов (product_id, language_id, поле и др.),
+        $this->assertAllowedTargetField(); /// "проверяет, что targetField (поле для записи) разрешено; //// защита от записи в несуществующую или запрещённую колонку"
 
-        // Этап 1: сырьё — сначала текст этого запуска (generateAi уже собрал Source/Result/БД с правильным приоритетом),
-        // иначе product_descriptions.result для языка (очередь без устаревшего несохранённого текста не затирает свежий ввод).
+      
         $sourceMaterial = trim($this->sourceText);
-        if ($sourceMaterial === '') {
-            $rowResult = DB::table('product_descriptions')
-                ->where('product_id', $this->product->id)
-                ->where('language_id', $this->languageId)
-                ->value('result');
-            $sourceMaterial = trim(is_string($rowResult) ? $rowResult : (string) ($rowResult ?? ''));
-        }
+        // "берём исходный текст (сырьё) из Job и очищаем от пробелов"
+     
         if ($sourceMaterial === '') {
             Log::error('[AiFieldGeneratorJob] Пустое сырьё в джобе', $ctx);
             throw new RuntimeException('Пустое сырьё (sourceText из запуска или product_descriptions.result) — генерация невозможна.');
@@ -63,7 +72,7 @@ class AiFieldGeneratorJob implements ShouldQueue
             'source_len' => mb_strlen($sourceMaterial),
             'source_sha1' => hash('sha1', $sourceMaterial),
         ]);
-
+// беру промпты из объекта $this->prompts
         $instruction1 = trim((string) ($this->prompts->description ?? ''));
         $instruction2 = trim((string) ($this->prompts->stage_2_live ?? ''));
         $instruction3 = trim((string) ($this->prompts->stage_3_edit ?? ''));
@@ -77,26 +86,29 @@ class AiFieldGeneratorJob implements ShouldQueue
             throw new RuntimeException('Заполните description, stage_2_live и stage_3_edit для категории промта (язык '.$this->languageId.').');
         }
 
-        $this->updateStatus(2);
+        $this->updateStatus(2);  // закидываю 2 поля статуса цвет желтый
 
         $openAi = app(OpenAiService::class);
         $gemini = app(GeminiService::class);
 
-        // --- Этап 1: сырьё из джобы → API → та же колонка ---
+       
         Log::info('[AiFieldGeneratorJob] Этап 1: OpenAI (Extraction) → запись в колонку', $ctx + [
             'instruction_len' => mb_strlen($instruction1),
             'material_len' => mb_strlen($sourceMaterial),
         ]);
 
         $this->assertMaterialDiffersFromInstruction('before_extraction', $sourceMaterial, $instruction1, $ctx);
+//// "проверяет, что исходный текст (sourceMaterial) не совпадает с промптом (instruction1) // на этапе 'before_extraction'; если совпадает — логирует и выбрасывает ошибку"
+
+
 
         $step1 = $this->assertPipelineStage(
             'OpenAI Extraction',
             $openAi->chat($sourceMaterial, $instruction1),
             $instruction1,
             $ctx
-        );
-        $this->persistStageToTargetColumn($step1, $ctx, 'after_extraction');
+        );  //// "отправляем текст + промпт в OpenAI и получаем результат"
+        $this->persistStageToTargetColumn($step1, $ctx, 'after_extraction');  // запись его в базу и так по каждомк у шагу
 
         // --- Этап 2: материал из той же колонки (результат этапа 1) ---
         $materialForStage2 = $this->loadMaterialFromTargetColumn($ctx, 'before_enliven');
@@ -110,7 +122,7 @@ class AiFieldGeneratorJob implements ShouldQueue
             'OpenAI Enliven',
             $openAi->chat($materialForStage2, $instruction2),
             $instruction2,
-            $ctx
+            $ctx //// "отправляем текст + промпт в OpenAI и получаем результат"
         );
         $this->persistStageToTargetColumn($step2, $ctx, 'after_enliven');
 
@@ -150,20 +162,35 @@ class AiFieldGeneratorJob implements ShouldQueue
      */
     private function persistStageToTargetColumn(string $text, array $ctx, string $stageTag): void
     {
-        $updated = DB::table('product_descriptions')
+        $query = DB::table('product_descriptions')
             ->where('product_id', $this->product->id)
-            ->where('language_id', $this->languageId)
-            ->update([$this->targetField => $text]);
+            ->where('language_id', $this->languageId);
 
-        if ($updated === 0) {
-            Log::error('[AiFieldGeneratorJob] Не удалось записать этап в колонку', $ctx + ['stage' => $stageTag]);
-            throw new RuntimeException('Строка product_descriptions не найдена или колонка не обновлена (этап: '.$stageTag.').');
+        $updated = $query->update([$this->targetField => $text]);
+        if ($updated > 0) {
+            Log::info('[AiFieldGeneratorJob] Результат этапа записан в колонку', $ctx + [
+                'stage' => $stageTag,
+                'written_len' => mb_strlen($text),
+            ]);
+
+            return;
         }
 
-        Log::info('[AiFieldGeneratorJob] Результат этапа записан в колонку', $ctx + [
-            'stage' => $stageTag,
-            'written_len' => mb_strlen($text),
-        ]);
+        // MySQL возвращает 0, если строка найдена, но значение в колонке уже такое же.
+        $existing = $query->value($this->targetField);
+        $normalizedExisting = is_string($existing) ? trim($existing) : trim((string) ($existing ?? ''));
+        $normalizedIncoming = trim($text);
+        if ($normalizedExisting !== '' && $normalizedExisting === $normalizedIncoming) {
+            Log::info('[AiFieldGeneratorJob] Запись этапа без изменений (no-op update)', $ctx + [
+                'stage' => $stageTag,
+                'written_len' => mb_strlen($text),
+            ]);
+
+            return;
+        }
+
+        Log::error('[AiFieldGeneratorJob] Не удалось записать этап в колонку', $ctx + ['stage' => $stageTag]);
+        throw new RuntimeException('Строка product_descriptions не найдена или колонка не обновлена (этап: '.$stageTag.').');
     }
 
     /**
@@ -325,7 +352,18 @@ class AiFieldGeneratorJob implements ShouldQueue
     public function failed(?Throwable $exception): void
     {
         $this->updateStatus(5);
-        $this->clearCache();
+        // Для UI-светофора: при падении обязательно сохраняем явный флаг ошибки,
+        // чтобы поле показывалось красным, а не "processing"/желтым.
+        Cache::forget('product_ai_generation_started_at:'.$this->product->id.':'.$this->targetField);
+        Cache::put(
+            'product_ai_generation_error:'.$this->product->id.':'.$this->targetField,
+            [
+                'at' => time(),
+                'message' => $exception?->getMessage(),
+                'exception_class' => $exception ? $exception::class : null,
+            ],
+            now()->addDay()
+        );
 
         Log::error('[AiFieldGeneratorJob] Конвейер остановлен (failed)', $this->logContext() + [
             'message' => $exception?->getMessage(),

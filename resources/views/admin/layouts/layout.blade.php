@@ -219,7 +219,7 @@
                     <li class="nav-item">
                         <a href="{{ route('admin.prompt-categories.index') }}" class="nav-link">
                             <i class="nav-icon fas fa-folder-open"></i>
-                            <p>Категории промтов</p>
+                            <p>Промты</p>
                         </a>
                     </li>
                     <li class="nav-item d-none">

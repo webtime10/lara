@@ -11,7 +11,6 @@ use App\Models\Manufacturer;
 use App\Models\Product;
 use App\Models\ProductDescription;
 use App\Models\User;
-use App\Support\AiDescriptionJsonNormalizer;
 use Illuminate\Http\Request;
 use PhpOffice\PhpWord\Element\AbstractContainer;
 use PhpOffice\PhpWord\Element\PreserveText;
@@ -38,6 +37,14 @@ class ProductController extends Controller
     /**
      * POST admin/products/generate-ai: ставит в очередь AiFieldGeneratorJob (по одному на язык).
      * Подробности по шагам — в комментариях к строкам тела метода.
+     * 
+     * 1. Берёшь товар
+     * 2. Берёшь поле (ai_title, ai_desc…)
+     * 3. Берёшь язык
+     * 4. Проверяешь — есть ли уже текст
+     * 5. Если нет → находишь правильный промпт
+     * 6. Отправляешь в AI → сохраняешь результат
+     * 
      */
 public function generateAi(Request $request)
     {
@@ -63,44 +70,14 @@ public function generateAi(Request $request)
         // SELECT * FROM `products` WHERE `id` = 125 LIMIT 1;
         $product = Product::findOrFail($data['product_id']);
 
-        // 2. Исходный текст: Source и Result из AJAX → затем БД → запасные варианты.
+        // 2. Исходный текст: только поле «Исходное сырьё» (без fallback на другие поля).
         $baseText = trim((string) ($data['source_text'] ?? ''));
-        if ($baseText === '') {
-            $baseText = trim((string) ($data['result_text'] ?? ''));
-        }
-        if ($baseText === '') {
-            $defaultLang = Language::getDefault();
-            if ($defaultLang) {
-                $baseText = trim((string) DB::table('product_descriptions')
-                    ->where('product_id', $product->id)
-                    ->where('language_id', $defaultLang->id)
-                    ->value('result'));
-            }
-        }
-        if ($baseText === '') {
-            $baseText = trim((string) ($product->result ?? ''));
-        }
-        if ($baseText === '') {
-            $baseText = trim((string) ($product->source_text ?? ''));
-        }
 
-        // ДОПОЛНИТЕЛЬНЫЙ ШАНС: Если всё еще пусто, берем текст из описания товара (RU)
+        // 3. Проверка наличия текста в source_text.
         if ($baseText === '') {
-            $defaultLang = \App\Models\Language::getDefault();
-            $desc = $product->descriptions()->where('language_id', $defaultLang?->id)->first();
-            // Чистим от тегов, если там HTML
-            $baseText = trim(strip_tags((string) ($desc?->description ?? '')));
-            
-            if ($baseText !== '') {
-                \Log::info('Source text found in Product Description (fallback).');
-            }
-        }
-
-        // 3. ПРОВЕРКА ДЛИНЫ (снизили до 5 символов, чтобы не блокировать короткие описания)
-        if (mb_strlen($baseText) < 5) {
-            \Log::warning('AI Generation ABORTED: No sufficient source text found.', ['text' => $baseText]);
+            \Log::warning('AI Generation ABORTED: Empty source_text.', ['text' => $baseText]);
             return response()->json([
-                'message' => 'Не нашли текст для генерации. Заполните поле «Исходное сырьё» или «Результат», сохраните пост или задайте описание.',
+                'message' => 'Вставьте текст в поле «Исходное сырьё».',
             ], 422);
         }
 
@@ -116,18 +93,8 @@ public function generateAi(Request $request)
         }
 // в светафор машина завелась - значение 0 закидываем
         $product->update(['ai_status' => json_encode(0)]);
-/*
-*/
-        foreach ($targetFields as $targetField) {
-            Cache::forget($this->aiGenerationErrorCacheKey($product->id, $targetField)); // полностью удаляем запись из кеша
-            DB::table('product_descriptions')
-                ->where('product_id', $product->id)
-                ->update([$targetField => null]);
-            // Ставим метку старта для каждого поля отдельно.
-            Cache::put($this->aiGenerationStartedCacheKey($product->id, $targetField), time(), 86400);  // зписывет nullв кеш
-        }  // мы каждые 5 секунд рьрощаемся сюда с аякс получаем состояние  (это желтый)
 
-        $languages = Language::all();
+        $languages = Language::all();   // все яхыки
 
         \Log::info('Dispatching AiFieldGeneratorJob workers to Queue...', [
             'product_id' => $product->id,
@@ -141,68 +108,110 @@ public function generateAi(Request $request)
 
 
 /// здесь отдаю в воркер
-foreach ($targetFields as $targetField) {
-    foreach ($languages as $language) {
-        // 1. Проверка существования записи в целевой таблице
-        $exists = DB::table('product_descriptions')
-            ->where('product_id', $product->id)
-            ->where('language_id', $language->id)
-            ->exists();
+// цикл по всем полям и в нем по языку
+        foreach ($targetFields as $targetField) {
+            foreach ($languages as $language) {
+                // 1. Проверка существования записи в целевой таблице
+                $exists = DB::table('product_descriptions')
+                    ->where('product_id', $product->id)
+                    ->where('language_id', $language->id)
+                    ->exists();
 
-        if (!$exists) {
-            \Log::warning('[generateAi] Пропуск: нет записи в product_descriptions', [
-                'product_id' => $product->id, 
-                'lang' => $language->id, 
-                'field' => $targetField
-            ]);
-            continue;
+/*
+SELECT EXISTS (
+    SELECT 1
+    FROM product_descriptions
+    WHERE product_id = 123
+      AND language_id = 1
+);
+
+получаю тру или фолсе SELECT EXISTS
+если поле уже норм заполнено ! $exists → не трогай его continue;
+*/
+
+
+                if (! $exists) {
+                    \Log::warning('[generateAi] Пропуск: нет записи в product_descriptions', [
+                        'product_id' => $product->id,
+                        'lang' => $language->id,
+                        'field' => $targetField,
+                    ]);
+                    continue;
+                }
+
+                // возьми значение одного конкретного поля из базы
+                $currentValue = DB::table('product_descriptions')
+                    ->where('product_id', $product->id)
+                    ->where('language_id', $language->id)
+                    ->value($targetField);
+                /*
+SELECT ai_title
+FROM product_descriptions
+WHERE product_id = 125
+  AND language_id = 1
+LIMIT 1;
+                */
+
+
+/*
+1. взяли значение поля
+2. привели к строке
+3. проверили длину
+
+если текст нормальный →
+    не генерируем
+    идём дальше
+
+если текст пустой →
+    идём генерировать
+*/
+                $currentText = trim(is_string($currentValue) ? $currentValue : (string) ($currentValue ?? ''));
+                if ($currentText !== '' && mb_strlen($currentText) > 50) {
+                    \Log::info('Skip generation: already exists', [
+                        'product_id' => $product->id,
+                        'language_id' => $language->id,
+                        'field' => $targetField,
+                        'current_len' => mb_strlen($currentText),
+                    ]);
+                    continue;
+                }
+
+                // 3.  Выбирать промпт для конкретного товара + языка + поля + c какого сайта
+                $mid = $product->manufacturer_id;
+                $prompts = DB::selectOne('
+                    SELECT d.*, c.id AS resolved_prompt_category_id
+                    FROM `prompt_category_descriptions` AS d
+                    INNER JOIN `prompt_categories` AS c ON d.prompt_category_id = c.id
+                    WHERE c.ai_field = ? AND d.language_id = ? AND c.manufacturer_id = ?
+                    ORDER BY c.sort_order ASC, c.id ASC
+                    LIMIT 1
+                ', [$targetField, $language->id, $mid]);
+
+                if (! $prompts) {
+                    \Log::error("КРИТИЧЕСКАЯ ОШИБКА: Промпт не найден для поля {$targetField} и языка {$language->id}.");
+                    continue;
+                }
+
+                Cache::forget($this->aiGenerationErrorCacheKey($product->id, $targetField));
+                Cache::put($this->aiGenerationStartedCacheKey($product->id, $targetField), time(), 86400);
+
+                // 4. Отправка в очередь с передачей всех данных
+                dispatch(new AiFieldGeneratorJob(
+                    $product, // "объект товара (вся модель продукта: id, manufacturer_id и др.; в очереди фактически передаётся его ID)"
+                    $language->id,   // "ID языка (например: ru=1, en=2), определяет на каком языке генерировать текст"
+                    $targetField, // "название поля, которое нужно заполнить (например: ai_title, ai_description)"
+                    $baseText,  // "исходный текст (сырьё), на основе которого AI будет генерировать новый контент"
+                    $prompts  // "ОДИН выбранный промпт (под язык + поле + производителя)"
+                ));
+
+                \Log::info('Dispatch generation', [
+                    'product_id' => $product->id,
+                    'language_id' => $language->id,
+                    'field' => $targetField,
+                    'prompt_id' => $prompts->id,
+                ]);
+            }
         }
-
-        // 2. Выбор правильного промпта (твой умный SQL)
-        $mid = $product->manufacturer_id;
-        $sql = $mid !== null ? '
-            SELECT d.*, c.id AS resolved_prompt_category_id
-            FROM `prompt_category_descriptions` AS d
-            INNER JOIN `prompt_categories` AS c ON d.prompt_category_id = c.id
-            WHERE c.ai_field = ? AND d.language_id = ?
-              AND (c.manufacturer_id IS NULL OR c.manufacturer_id = ?)
-            ORDER BY 
-                CASE WHEN c.manufacturer_id <=> ? THEN 0 WHEN c.manufacturer_id IS NULL THEN 1 ELSE 2 END,
-                c.sort_order ASC, c.id ASC
-            LIMIT 1' : '
-            SELECT d.*, c.id AS resolved_prompt_category_id
-            FROM `prompt_category_descriptions` AS d
-            INNER JOIN `prompt_categories` AS c ON d.prompt_category_id = c.id
-            WHERE c.ai_field = ? AND d.language_id = ? AND c.manufacturer_id IS NULL
-            ORDER BY c.sort_order ASC, c.id ASC
-            LIMIT 1';
-
-        $params = $mid !== null ? [$targetField, $language->id, $mid, $mid] : [$targetField, $language->id];
-        $prompts = DB::selectOne($sql, $params);
-
-        if (!$prompts) {
-            \Log::error("КРИТИЧЕСКАЯ ОШИБКА: Промпт не найден для поля {$targetField} и языка {$language->id}.");
-            continue;
-        }
-
-        // 3. Отправка в очередь с передачей всех данных
-        // Мы передаем объект $prompts, который уже привязан к нужному language_id
-        dispatch(new AiFieldGeneratorJob(
-            $product,
-            $language->id,
-            $targetField,
-            $baseText,
-            $prompts
-        ));
-        
-        \Log::info('[generateAi] Задача отправлена в очередь', [
-            'product_id' => $product->id,
-            'lang' => $language->id,
-            'field' => $targetField,
-            'prompt_id' => $prompts->id
-        ]);
-    }
-}
 
         return response()->json([
             'message' => count($targetFields) > 1
@@ -547,8 +556,9 @@ $baseText (Сырые данные — твой "залетевший" текс�
         $manufacturers = Manufacturer::orderBy('sort_order')->orderBy('name')->get();
         $categories = Category::with('descriptions')->orderBy('sort_order')->get();
         $aiFields = $this->getAiPrefixedDescriptionFields();
+        $nextModel = (string) ((int) Product::max('id') + 1);
 
-        return view('admin.products.create', compact('pageTitle', 'languages', 'defaultLanguage', 'manufacturers', 'categories', 'aiFields'));
+        return view('admin.products.create', compact('pageTitle', 'languages', 'defaultLanguage', 'manufacturers', 'categories', 'aiFields', 'nextModel'));
     }
 
     public function store(Request $request)
@@ -560,8 +570,8 @@ $baseText (Сырые данные — твой "залетевший" текс�
         }
 
         $rules = [
-            'model' => 'required|string|max:64',
-            'manufacturer_id' => 'nullable|exists:manufacturers,id',
+            'model' => ['required', 'string', 'max:64', Rule::unique('products', 'model')],
+            'manufacturer_id' => 'required|exists:manufacturers,id',
             'status' => 'nullable|boolean',
             'source_text' => 'nullable|string',
             'result' => 'nullable|string',
@@ -569,36 +579,33 @@ $baseText (Сырые данные — твой "залетевший" текс�
             'category_ids.*' => 'exists:categories,id',
         ];
         $aiFieldKeys = array_keys($this->getAiPrefixedDescriptionFields());
+        $messages = [];
         foreach ($languages as $language) {
             $suffix = $language->code;
-            $rules['name_'.$suffix] = $language->is_default ? 'required|string|max:255' : 'nullable|string|max:255';
-            if ($language->is_default) {
-                $rules['slug_'.$suffix] = [
-                    'required', 'string', 'max:255',
-                    Rule::unique('product_descriptions', 'slug')->where('language_id', $language->id),
-                ];
-            } else {
-                $rules['slug_'.$suffix] = [
-                    'nullable', 'string', 'max:255',
-                    Rule::unique('product_descriptions', 'slug')->where('language_id', $language->id),
-                ];
-            }
+            $rules['name_'.$suffix] = 'required|string|max:255';
+            $rules['slug_'.$suffix] = [
+                'required', 'string', 'max:255',
+                Rule::unique('product_descriptions', 'slug')->where('language_id', $language->id),
+            ];
             $rules['description_'.$suffix] = 'nullable|string';
             foreach ($aiFieldKeys as $aiField) {
                 $rules[$aiField.'_'.$suffix] = 'nullable|string';
             }
+
+            $messages['name_'.$suffix.'.required'] = 'Не заполнено название для языка: '.$language->name.'.';
+            $messages['slug_'.$suffix.'.required'] = 'Не заполнен slug для языка: '.$language->name.'.';
         }
+        $messages['model.required'] = 'Поле Model обязательно для заполнения.';
+        $messages['manufacturer_id.required'] = 'Поле Сайт обязательно для заполнения.';
+        $messages['category_ids.required'] = 'Выберите категорию.';
+        $messages['category_ids.min'] = 'Выберите хотя бы одну категорию.';
 
         $this->mergeLocalizedSlugsFromRequest($request, $languages);
 
-        $request->validate($rules);
+        $request->validate($rules, $messages);
 
         DB::transaction(function () use ($request, $languages, $aiFieldKeys) {
-            $authorId = null;
-            $authUser = Auth::user();
-            if ($authUser && ($authUser->role_id || !empty($authUser->role))) {
-                $authorId = $authUser->id;
-            }
+            $authorId = Auth::id();
 
             $product = Product::create([
                 'model' => $request->model,
@@ -638,9 +645,10 @@ $baseText (Сырые данные — твой "залетевший" текс�
                     'result' => $this->resolveProductDescriptionSourceRaw($request),
                 ];
                 foreach ($aiFieldKeys as $aiField) {
-                    $descriptionPayload[$aiField] = AiDescriptionJsonNormalizer::normalize(
-                        $request->input($aiField.'_'.$suffix)
-                    );
+                    $rawAiValue = $request->input($aiField.'_'.$suffix);
+                    $descriptionPayload[$aiField] = is_string($rawAiValue)
+                        ? $rawAiValue
+                        : (($rawAiValue === null) ? '' : (string) $rawAiValue);
                 }
                 ProductDescription::create($descriptionPayload);
             }
@@ -678,8 +686,8 @@ $baseText (Сырые данные — твой "залетевший" текс�
 
         // Базовые правила валидации для основных полей товара
         $rules = [
-            'model' => 'required|string|max:64',
-            'manufacturer_id' => 'nullable|exists:manufacturers,id',
+            'model' => ['required', 'string', 'max:64', Rule::unique('products', 'model')->ignore($product->id)],
+            'manufacturer_id' => 'required|exists:manufacturers,id',
             'status' => 'nullable|boolean',
             'category_ids' => 'required|array|min:1',
             'category_ids.*' => 'exists:categories,id',
@@ -687,48 +695,41 @@ $baseText (Сырые данные — твой "залетевший" текс�
 
         // Динамическая валидация для каждого языка
         $aiFieldKeys = array_keys($this->getAiPrefixedDescriptionFields());
+        $messages = [];
         foreach ($languages as $language) {
             $suffix = $language->code;
             
-            // Название обязательно только для дефолтного языка
-            $rules['name_'.$suffix] = $language->is_default ? 'required|string|max:255' : 'nullable|string|max:255';
+            $rules['name_'.$suffix] = 'required|string|max:255';
             
             $desc = $product->descriptions->firstWhere('language_id', $language->id);
             
-            // Уникальность Slug с учетом текущего ID описания (игнорируем текущую запись при проверке)
-            if ($language->is_default) {
-                $rules['slug_'.$suffix] = [
-                    'required', 'string', 'max:255',
-                    Rule::unique('product_descriptions', 'slug')->where('language_id', $language->id)->ignore($desc?->id),
-                ];
-            } else {
-                $rules['slug_'.$suffix] = [
-                    'nullable', 'string', 'max:255',
-                    Rule::unique('product_descriptions', 'slug')->where('language_id', $language->id)->ignore($desc?->id),
-                ];
-            }
+            $rules['slug_'.$suffix] = [
+                'required', 'string', 'max:255',
+                Rule::unique('product_descriptions', 'slug')->where('language_id', $language->id)->ignore($desc?->id),
+            ];
             
             // Правила для описаний и наших AI-полей
             $rules['description_'.$suffix] = 'nullable|string';
             foreach ($aiFieldKeys as $aiField) {
                 $rules[$aiField.'_'.$suffix] = 'nullable|string';
             }
+
+            $messages['name_'.$suffix.'.required'] = 'Не заполнено название для языка: '.$language->name.'.';
+            $messages['slug_'.$suffix.'.required'] = 'Не заполнен slug для языка: '.$language->name.'.';
         }
+        $messages['model.required'] = 'Поле Model обязательно для заполнения.';
+        $messages['manufacturer_id.required'] = 'Поле Сайт обязательно для заполнения.';
+        $messages['category_ids.required'] = 'Выберите категорию.';
+        $messages['category_ids.min'] = 'Выберите хотя бы одну категорию.';
 
         // Обработка автоматических слагов перед валидацией
         $this->mergeLocalizedSlugsFromRequest($request, $languages);
 
-        $request->validate($rules);
+        $request->validate($rules, $messages);
 
         // Все изменения в БД оборачиваем в транзакцию — либо всё сохранится, либо ничего
         DB::transaction(function () use ($request, $languages, $product, $aiFieldKeys) {
-            $authorId = $product->author_id;
-            $authUser = Auth::user();
-            
-            // Если роль заполнена, обновляем автора на того, кто редактирует
-            if ($authUser && ($authUser->role_id || !empty($authUser->role))) {
-                $authorId = $authUser->id;
-            }
+            $authorId = Auth::id();
 
             // Обновление основной таблицы товара
             $product->update([
@@ -776,9 +777,10 @@ $baseText (Сырые данные — твой "залетевший" текс�
                     'result' => $this->resolveProductDescriptionSourceRaw($request),
                 ];
                 foreach ($aiFieldKeys as $aiField) {
-                    $descriptionPayload[$aiField] = AiDescriptionJsonNormalizer::normalize(
-                        $request->input($aiField.'_'.$suffix)
-                    );
+                    $rawAiValue = $request->input($aiField.'_'.$suffix);
+                    $descriptionPayload[$aiField] = is_string($rawAiValue)
+                        ? $rawAiValue
+                        : (($rawAiValue === null) ? '' : (string) $rawAiValue);
                 }
                 ProductDescription::updateOrCreate(
                     [
@@ -798,6 +800,26 @@ $baseText (Сырые данные — твой "залетевший" текс�
         Product::findOrFail($id)->delete();
 
         return redirect()->route('admin.products.index')->with('success', 'Пост удалён');
+    }
+
+    public function bulkDestroy(Request $request)
+    {
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['integer', 'exists:products,id'],
+        ]);
+
+        $products = Product::query()
+            ->whereIn('id', $data['ids'])
+            ->get();
+
+        foreach ($products as $product) {
+            $product->delete();
+        }
+
+        return redirect()
+            ->route('admin.products.index')
+            ->with('success', 'Выбранные посты удалены: '.$products->count());
     }
 
     /**
@@ -1019,9 +1041,34 @@ $baseText (Сырые данные — твой "залетевший" текс�
 
         $data = json_decode((string) $value, true);
         if (is_array($data)) {
-            return ! empty($data['title']) || ! empty($data['text_1']) || ! empty($data['text_2']);
+            // Основной формат нашего пайплайна.
+            $isPrimaryShapeComplete = ! empty($data['title']) || ! empty($data['text_1']) || ! empty($data['text_2']);
+            if ($isPrimaryShapeComplete) {
+                return true;
+            }
+
+            // Фолбэк для альтернативных JSON-структур (например sections/layout):
+            // если в JSON есть хоть какой-то непустой текст/скаляр, считаем поле заполненным.
+            return $this->jsonArrayHasNonEmptyScalar($data);
         }
 
         return mb_strlen(trim((string) $value)) > 10;
+    }
+
+    private function jsonArrayHasNonEmptyScalar(array $data): bool
+    {
+        $hasContent = false;
+
+        array_walk_recursive($data, function (mixed $item) use (&$hasContent): void {
+            if (is_string($item) && trim($item) !== '') {
+                $hasContent = true;
+                return;
+            }
+            if (is_int($item) || is_float($item) || is_bool($item)) {
+                $hasContent = true;
+            }
+        });
+
+        return $hasContent;
     }
 }
