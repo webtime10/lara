@@ -55,9 +55,88 @@ Route::prefix('admin')
             ]);
         })->name('slug.preview');
 
+        Route::get('api-check/openai', function () {
+            $apiKey = config('services.openai.key');
+            if (! $apiKey) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Нет подключения: OPENAI_API_KEY не задан.',
+                ], 500);
+            }
+
+            try {
+                $client = \OpenAI::client($apiKey);
+                $client->chat()->create([
+                    'model' => (string) config('services.openai.model', 'gpt-4o-mini'),
+                    'max_tokens' => 8,
+                    'messages' => [
+                        ['role' => 'user', 'content' => 'Ответь только OK'],
+                    ],
+                ]);
+
+                return response()->json([
+                    'ok' => true,
+                    'message' => 'OK, есть подключение OpenAI.',
+                ]);
+            } catch (\Throwable $e) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Нет подключения OpenAI: '.$e->getMessage(),
+                ], 500);
+            }
+        })->name('api-check.openai');
+
+        Route::get('api-check/gemini', function () {
+            $apiKey = config('services.gemini.key');
+            if (! $apiKey) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Нет подключения: GEMINI_API_KEY не задан.',
+                ], 500);
+            }
+
+            $model = (string) config('services.gemini.model', 'gemini-2.5-flash');
+            $url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+                .rawurlencode($model)
+                .':generateContent';
+
+            try {
+                $response = Http::timeout(20)->post($url.'?key='.urlencode($apiKey), [
+                    'contents' => [
+                        [
+                            'parts' => [
+                                ['text' => 'Ответь только OK'],
+                            ],
+                        ],
+                    ],
+                    'generationConfig' => [
+                        'maxOutputTokens' => 8,
+                    ],
+                ]);
+
+                if (! $response->successful()) {
+                    return response()->json([
+                        'ok' => false,
+                        'message' => 'Нет подключения Gemini: HTTP '.$response->status(),
+                    ], 500);
+                }
+
+                return response()->json([
+                    'ok' => true,
+                    'message' => 'OK, есть подключение Gemini.',
+                ]);
+            } catch (\Throwable $e) {
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Нет подключения Gemini: '.$e->getMessage(),
+                ], 500);
+            }
+        })->name('api-check.gemini');
+
         // Ресурсы
         Route::resource('categories', CategoryController::class)->except(['show']);
         Route::resource('languages', LanguageController::class)->except(['show']);
+        Route::post('prompt-categories/extraction-prompt', [PromptCategoryController::class, 'updateExtractionPrompt'])->name('prompt-categories.update-extraction-prompt');
         Route::post('prompt-categories/{id}/raw-data', [PromptCategoryController::class, 'updateRawData'])->name('prompt-categories.update-raw-data');
         Route::resource('prompt-categories', PromptCategoryController::class)->except(['show']);
         Route::resource('products', ProductController::class)->except(['show']);

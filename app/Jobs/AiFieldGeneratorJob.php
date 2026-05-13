@@ -56,19 +56,23 @@ class AiFieldGeneratorJob implements ShouldQueue
 
     public function handle(): void   // "основной метод Job: выполняет генерацию текста через AI (3 этапа) и сохраняет результат в БД"
     {
+        $freshProduct = $this->product->fresh();
+        if ($freshProduct) {
+            $this->product = $freshProduct;
+        }
+
         $ctx = $this->logContext(); // "формирует контекст для логов (product_id, language_id, поле и др.),
         $this->assertAllowedTargetField(); /// "проверяет, что targetField (поле для записи) разрешено; //// защита от записи в несуществующую или запрещённую колонку"
 
-      
-        $sourceMaterial = trim($this->sourceText);
-        // "берём исходный текст (сырьё) из Job и очищаем от пробелов"
+        $sourceMaterial = trim((string) ($this->product->result ?? ''));
+        // После отдельного ExtractProductGistJob работаем с выжимкой из products.result, а не с полным сырьём.
      
         if ($sourceMaterial === '') {
             Log::error('[AiFieldGeneratorJob] Пустое сырьё в джобе', $ctx);
-            throw new RuntimeException('Пустое сырьё (sourceText из запуска или product_descriptions.result) — генерация невозможна.');
+            throw new RuntimeException('Пустая выжимка products.result — генерация невозможна. Сначала должна отработать выжимка сырья.');
         }
 
-        Log::info('[AiFieldGeneratorJob] Старт: сырьё → колонка (этап1) → та же колонка (этап2) → та же колонка (этап3)', $ctx + [
+        Log::info('[AiFieldGeneratorJob] Старт: выжимка → колонка (этап1) → та же колонка (этап2) → та же колонка (этап3)', $ctx + [
             'source_len' => mb_strlen($sourceMaterial),
             'source_sha1' => hash('sha1', $sourceMaterial),
         ]);
@@ -329,7 +333,7 @@ class AiFieldGeneratorJob implements ShouldQueue
             'manufacturer_id' => $this->product->manufacturer_id,
             'language_id' => $this->languageId,
             'target_field' => $this->targetField,
-            'source_len' => mb_strlen($this->sourceText),
+            'source_len' => mb_strlen((string) ($this->product->result ?? $this->sourceText)),
         ];
     }
 

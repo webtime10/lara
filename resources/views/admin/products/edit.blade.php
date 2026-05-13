@@ -185,11 +185,13 @@
                                 style="background:#f5f8ff;border-color:#0644ff;"
                                 placeholder="Вставьте сюда текст со швейцарских сайтов или соцсетей..."
                             >{{ old('source_text', $product->source_text) }}</textarea>
-                            <div class="wrap-ai-status-indicator" style="display:none;">
-                                <label for="result_textarea" class="mt-3"><span><i class="fas fa-check-circle"></i> Результат (Result)</span>
-
-                                </label>
-                            </div>   
+                            <div class="wrap-ai-status-indicator d-flex align-items-center mt-2">
+                                <label class="mb-0 mr-2">Выжимка сырья</label>
+                                <a href="javascript:void(0)" class="ai-extraction-status-indicator">
+                                    <i class="fas fa-circle text-secondary"></i>
+                                </a>
+                                <span id="ai-extraction-status-text" class="text-muted ml-2 small">Ожидание</span>
+                            </div>
                             <textarea
                                 name="result"
                                 id="result_textarea"
@@ -324,6 +326,46 @@
         var indicatorSelector = '.ai-status-indicator[data-field="%FIELD%"] i';
         var checkUrl = "{{ route('admin.products.check_ai_status', $product->id, false) }}";
         var expectedLanguages = @json($aiCheckExpectedLanguages);
+        var $extractionIcon = $('.ai-extraction-status-indicator i');
+        var $extractionText = $('#ai-extraction-status-text');
+
+        function setExtractionIndicatorState(status) {
+            if (!$extractionIcon.length) {
+                return;
+            }
+            if (status === 'success') {
+                $extractionIcon.removeClass('text-warning text-danger text-secondary').addClass('text-success');
+                $extractionText.removeClass('text-warning text-danger').addClass('text-muted').text('Готово');
+            } else if (status === 'error') {
+                $extractionIcon.removeClass('text-warning text-success text-secondary').addClass('text-danger');
+                $extractionText.removeClass('text-muted text-warning').addClass('text-danger').text('Ошибка');
+            } else if (status === 'processing') {
+                $extractionIcon.removeClass('text-success text-danger text-secondary').addClass('text-warning');
+                $extractionText.removeClass('text-muted text-danger').addClass('text-warning').text('Идёт выжимка...');
+            } else {
+                $extractionIcon.removeClass('text-warning text-success text-danger').addClass('text-secondary');
+                $extractionText.removeClass('text-warning text-danger').addClass('text-muted').text('Ожидание');
+            }
+        }
+
+        function setExtractionIndicatorFromPayload(payload) {
+            var status = (payload && payload.status) ? payload.status : 'idle';
+            var message = payload && payload.error_message ? payload.error_message : null;
+            var hint = 'Ожидание выжимки сырья.';
+
+            if (status === 'success') {
+                hint = 'Выжимка готова и сохранена в result.';
+            } else if (status === 'processing') {
+                hint = 'OpenAI делает общую выжимку сырья.';
+            } else if (status === 'error') {
+                hint = 'Ошибка выжимки' + (message ? ': ' + message : '.');
+            }
+
+            setExtractionIndicatorState(status);
+            $('.ai-extraction-status-indicator')
+                .attr('title', hint)
+                .attr('data-original-title', hint);
+        }
 
         function setFieldIndicatorState(field, status) {
             var $fieldIndicators = $(indicatorSelector.replace('%FIELD%', field));
@@ -395,6 +437,7 @@
         }
 
         // Начальное состояние до запроса статуса: серый.
+        setExtractionIndicatorState('idle');
         setAllIndicatorsState('idle');
 
         // При загрузке страницы сразу синхронизируем цвета с фактическим состоянием в БД/кэше.
@@ -410,6 +453,9 @@
                 'Accept': 'application/json'
             }
         }).done(function (res) {
+            if (res && res.extraction) {
+                setExtractionIndicatorFromPayload(res.extraction);
+            }
             if (res && res.fields) {
                 aiFieldKeys.forEach(function (field) {
                     var fieldPayload = res.fields[field] || {};
@@ -435,6 +481,13 @@
                 alert('Вставьте текст в поле «Исходное сырьё».');
                 return;
             }
+            if (rawForAi.length > 720000) {
+                alert('Сырьё слишком большое: ' + rawForAi.length + ' символов. Максимум: 720000 символов.');
+                return;
+            }
+            if (rawForAi.length > 240000 && !confirm('Сырьё большое (' + rawForAi.length + ' символов). Оно будет обработано частями и может занять больше времени. Продолжить?')) {
+                return;
+            }
             // Если в конфиге нет ai-полей — не отправляем запрос.
             if (!aiFieldKeys.length) {
                 alert('Нет AI-полей для генерации.');
@@ -451,6 +504,7 @@
             $loader.show();
 
         // Ставим "в процессе" для всех AI-индикаторов.
+        setExtractionIndicatorState('processing');
         setAllIndicatorsState('processing');
 
         // Повторно фиксируем disabled/лоадер (дублирует первичную блокировку, но гарантирует состояние после смены классов иконок).
@@ -479,8 +533,6 @@
             })
                 // УСПЕШНЫЙ ОТВЕТ СЕРВЕРА (HTTP 200, без ошибок в контроллере)
                 .done(function (data) {
-    alert(data.message || 'Процесс запущен в фоне');
-    
     // Ссылка на проверку (маршрут, который ты добавил в web.php)
 // заходит в метод проверок и узнает состояние светафора
 
@@ -522,6 +574,9 @@
             },
             success: function (res) {
                 pollErrorStreak = 0;
+                if (res && res.extraction) {
+                    setExtractionIndicatorFromPayload(res.extraction);
+                }
                 if (res && res.fields) {
                     aiFieldKeys.forEach(function(field) {
                         var fieldPayload = res.fields[field] || {};
@@ -532,6 +587,9 @@
                 if (res && res.status === 'error') {
                     stopPolling();
                     var hintParts = [];
+                    if (res.extraction && res.extraction.status === 'error') {
+                        hintParts.push('Выжимка: ' + (res.extraction.error_message || res.extraction.error_reason || 'ошибка'));
+                    }
                     if (res.fields) {
                         aiFieldKeys.forEach(function (f) {
                             var p = res.fields[f] || {};

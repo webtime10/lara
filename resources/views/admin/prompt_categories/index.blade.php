@@ -72,22 +72,24 @@
 
             <div class="card mt-3">
                 <div class="card-header">
-                    <h3 class="card-title">Нотация к сырью</h3>
+                    <h3 class="card-title">Промт для выжимки</h3>
                 </div>
                 <div class="card-body">
-                    @if($selectedRawCategory)
-                        <form action="{{ route('admin.prompt-categories.update-raw-data', $selectedRawCategory->id) }}" method="post">
-                            @csrf
-                            <div class="form-group mb-2">
-                                <textarea name="row_data" class="form-control" rows="8" placeholder="Нотация к сырью">{{ old('row_data', $selectedRawCategory->row_data) }}</textarea>
-                            </div>
-                            <button type="submit" class="btn btn-primary btn-sm" title="Сохранить" aria-label="Сохранить">
-                                <i class="fas fa-save"></i> Сохранить
-                            </button>
-                        </form>
-                    @else
-                        <p class="text-muted mb-0">Нет промптов для редактирования нотации к сырью.</p>
-                    @endif
+                    <form action="{{ route('admin.prompt-categories.update-extraction-prompt') }}" method="post">
+                        @csrf
+                        <div class="form-group mb-2">
+                            <textarea
+                                name="prompt_text"
+                                class="form-control @error('prompt_text') is-invalid @enderror"
+                                rows="10"
+                                placeholder="Промт для выжимки"
+                            >{{ old('prompt_text', $extractionPrompt?->prompt_text ?? '') }}</textarea>
+                            @error('prompt_text')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm" title="Сохранить" aria-label="Сохранить">
+                            <i class="fas fa-save"></i> Сохранить
+                        </button>
+                    </form>
                 </div>
             </div>
         </div>

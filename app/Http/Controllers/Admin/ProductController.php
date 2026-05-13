@@ -4,7 +4,8 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Concerns\NormalizesLocalizedSlugs;
 use App\Http\Controllers\Controller;
-use App\Jobs\AiFieldGeneratorJob;
+use App\Jobs\DispatchAiFieldGenerationJobs;
+use App\Jobs\ExtractProductGistJob;
 use App\Models\Category;
 use App\Models\Language;
 use App\Models\Manufacturer;
@@ -22,6 +23,7 @@ use PhpOffice\PhpWord\IOFactory;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
@@ -81,6 +83,18 @@ public function generateAi(Request $request)
             ], 422);
         }
 
+        if (mb_strlen($baseText) > ExtractProductGistJob::MAX_SOURCE_CHARS) {
+            return response()->json([
+                'message' => 'Сырьё слишком большое: '.mb_strlen($baseText).' символов. Максимум: '.ExtractProductGistJob::MAX_SOURCE_CHARS.' символов.',
+            ], 422);
+        }
+
+        $sourceSha1 = hash('sha1', $baseText);
+        $product->forceFill([
+            'source_text' => $baseText,
+        ])->save();
+        $product->refresh();
+
         // Если поле не выбрано — генерируем сразу все ai_*.  // сбор всех полей
         $targetFields = [];
 
@@ -104,8 +118,10 @@ public function generateAi(Request $request)
             'languages_count' => $languages->count(),
         ]);
 
- 
+        Cache::forget($this->aiExtractionErrorCacheKey($product->id));
+        Cache::put($this->aiExtractionStartedCacheKey($product->id), time(), 86400);
 
+        $generationJobs = [];
 
 /// здесь отдаю в воркер
 // цикл по всем полям и в нем по языку
@@ -195,14 +211,12 @@ LIMIT 1;
                 Cache::forget($this->aiGenerationErrorCacheKey($product->id, $targetField));
                 Cache::put($this->aiGenerationStartedCacheKey($product->id, $targetField), time(), 86400);
 
-                // 4. Отправка в очередь с передачей всех данных
-                dispatch(new AiFieldGeneratorJob(
-                    $product, // "объект товара (вся модель продукта: id, manufacturer_id и др.; в очереди фактически передаётся его ID)"
-                    $language->id,   // "ID языка (например: ru=1, en=2), определяет на каком языке генерировать текст"
-                    $targetField, // "название поля, которое нужно заполнить (например: ai_title, ai_description)"
-                    $baseText,  // "исходный текст (сырьё), на основе которого AI будет генерировать новый контент"
-                    $prompts  // "ОДИН выбранный промпт (под язык + поле + производителя)"
-                ));
+                // 4. Готовим описание задачи; запуск будет после общей выжимки сырья.
+                $generationJobs[] = [
+                    'language_id' => (int) $language->id,
+                    'target_field' => (string) $targetField,
+                    'prompts' => (array) $prompts,
+                ];
 
                 \Log::info('Dispatch generation', [
                     'product_id' => $product->id,
@@ -212,6 +226,17 @@ LIMIT 1;
                 ]);
             }
         }
+
+        Bus::chain([
+            new ExtractProductGistJob($product, $baseText),
+            new DispatchAiFieldGenerationJobs($product, $generationJobs),
+        ])->dispatch();
+
+        \Log::info('[generateAi] Цепочка выжимки и генерации поставлена в очередь', [
+            'product_id' => $product->id,
+            'source_sha1' => $sourceSha1,
+            'generation_jobs_count' => count($generationJobs),
+        ]);
 
         return response()->json([
             'message' => count($targetFields) > 1
@@ -874,9 +899,10 @@ $baseText (Сырые данные — твой "залетевший" текс�
             return response()->json($single);
         }
 
+        $extraction = $this->buildAiExtractionStatusPayload($product);
         $fields = [];
-        $hasError = false;
-        $allReady = true;
+        $hasError = $extraction['status'] === 'error';
+        $allReady = $extraction['is_ready'] === true;
 
         foreach ($allowed as $allowedField) {
             $payload = $this->buildAiFieldStatusPayload($product, $allowedField, $expectedCodes);
@@ -890,9 +916,62 @@ $baseText (Сырые данные — твой "залетевший" текс�
         return response()->json([
             'is_ready' => $allReady,
             'status' => $status,
+            'extraction' => $extraction,
             'fields' => $fields,
             'timeout_seconds' => (int) config('ai.generation.timeout_seconds', 3600),
         ]);
+    }
+
+    private function buildAiExtractionStatusPayload(Product $product): array
+    {
+        $sourceText = trim((string) ($product->source_text ?? ''));
+        $resultText = trim((string) ($product->result ?? ''));
+        $sourceSha1 = $sourceText !== '' ? hash('sha1', $sourceText) : '';
+        $resultSourceSha1 = (string) ($product->result_source_sha1 ?? '');
+        $isReady = $sourceSha1 !== ''
+            && $resultText !== ''
+            && hash_equals($resultSourceSha1, $sourceSha1);
+
+        $startedKey = $this->aiExtractionStartedCacheKey($product->id);
+        $errorKey = $this->aiExtractionErrorCacheKey($product->id);
+        $startedAt = Cache::get($startedKey);
+        $timeoutSec = (int) config('ai.generation.timeout_seconds', 3600);
+        $errorPayload = Cache::get($errorKey);
+        $hasErrorFlag = Cache::has($errorKey);
+        $timedOut = is_int($startedAt)
+            && (time() - $startedAt) > $timeoutSec
+            && ! $isReady;
+
+        $errorReason = null;
+        $errorMessage = null;
+        if ($hasErrorFlag) {
+            $errorReason = 'api_error_cache';
+            $errorMessage = is_array($errorPayload) ? ($errorPayload['message'] ?? null) : null;
+        } elseif ($timedOut) {
+            $errorReason = 'timeout';
+        }
+
+        if ($isReady) {
+            Cache::forget($startedKey);
+            Cache::forget($errorKey);
+            $status = 'success';
+        } elseif ($hasErrorFlag || $timedOut) {
+            $status = 'error';
+        } elseif (is_int($startedAt)) {
+            $status = 'processing';
+        } else {
+            $status = 'idle';
+        }
+
+        return [
+            'is_ready' => $isReady,
+            'status' => $status,
+            'error_reason' => $errorReason,
+            'error_message' => $errorMessage,
+            'timeout_seconds' => $timeoutSec,
+            'started_at' => $startedAt,
+            'result_len' => mb_strlen($resultText),
+        ];
     }
 
     private function buildAiFieldStatusPayload(Product $product, string $field, array $expectedCodes): array
@@ -1001,6 +1080,16 @@ $baseText (Сырые данные — твой "залетевший" текс�
     private function aiGenerationStartedCacheKey(int $productId, string $field): string
     {
         return 'product_ai_generation_started_at:'.$productId.':'.$field;
+    }
+
+    private function aiExtractionErrorCacheKey(int $productId): string
+    {
+        return 'product_ai_extraction_error:'.$productId;
+    }
+
+    private function aiExtractionStartedCacheKey(int $productId): string
+    {
+        return 'product_ai_extraction_started_at:'.$productId;
     }
 
     /**

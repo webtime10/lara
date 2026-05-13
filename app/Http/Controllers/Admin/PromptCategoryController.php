@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Concerns\NormalizesLocalizedSlugs;
 use App\Http\Controllers\Controller;
+use App\Models\ExtractionPrompt;
 use App\Models\Language;
 use App\Models\Manufacturer;
 use App\Models\ProductDescription;
@@ -26,10 +27,10 @@ class PromptCategoryController extends Controller
             ->orderBy('sort_order')
             ->orderByDesc('id')
             ->paginate(15);
-        $currentPageItems = $categories->getCollection();
-        $selectedRawCategory = $currentPageItems->first();
+        $extractionPrompt = ExtractionPrompt::active()
+            ?? ExtractionPrompt::query()->orderByDesc('id')->first();
 
-        return view('admin.prompt_categories.index', compact('categories', 'pageTitle', 'defaultLanguage', 'aiFieldOptions', 'selectedRawCategory'));
+        return view('admin.prompt_categories.index', compact('categories', 'pageTitle', 'defaultLanguage', 'aiFieldOptions', 'extractionPrompt'));
     }
 
     public function create()
@@ -242,5 +243,29 @@ class PromptCategoryController extends Controller
         ]);
 
         return redirect()->route('admin.prompt-categories.index')->with('success', 'Нотация к сырью обновлена');
+    }
+
+    public function updateExtractionPrompt(Request $request)
+    {
+        $data = $request->validate([
+            'prompt_text' => ['required', 'string'],
+        ]);
+
+        DB::transaction(function () use ($data) {
+            ExtractionPrompt::query()->update(['is_active' => false]);
+
+            ExtractionPrompt::updateOrCreate(
+                ['key' => 'default'],
+                [
+                    'name' => 'Промт для выжимки',
+                    'prompt_text' => $data['prompt_text'],
+                    'is_active' => true,
+                ]
+            );
+        });
+
+        return redirect()
+            ->route('admin.prompt-categories.index')
+            ->with('success', 'Промт для выжимки обновлён');
     }
 }

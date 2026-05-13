@@ -26,6 +26,14 @@
             <div class="card">
                 <div class="card-body">
                     <p>Добро пожаловать в админ-панель!</p>
+                    <div class="mt-3">
+                        <button type="button" class="btn btn-primary btn-sm mr-2 js-api-check" data-url="{{ route('admin.api-check.openai') }}">
+                            ОПН
+                        </button>
+                        <button type="button" class="btn btn-info btn-sm js-api-check" data-url="{{ route('admin.api-check.gemini') }}">
+                            Джемини
+                        </button>
+                    </div>
                 </div>
                 <!-- /.card-body -->
             </div>
@@ -33,4 +41,37 @@
         </div>
     </section>
     <!-- /.content -->
+
+    <script>
+        $(function () {
+            $('.js-api-check').on('click', function () {
+                var $btn = $(this);
+                var oldText = $btn.text();
+
+                $btn.prop('disabled', true).text('Проверка...');
+
+                $.ajax({
+                    url: $btn.data('url'),
+                    method: 'GET',
+                    dataType: 'json',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json'
+                    }
+                })
+                    .done(function (res) {
+                        alert((res && res.message) ? res.message : 'OK, есть подключение.');
+                    })
+                    .fail(function (xhr) {
+                        var msg = (xhr.responseJSON && xhr.responseJSON.message)
+                            ? xhr.responseJSON.message
+                            : 'Нет подключения.';
+                        alert(msg);
+                    })
+                    .always(function () {
+                        $btn.prop('disabled', false).text(oldText);
+                    });
+            });
+        });
+    </script>
 @endsection
