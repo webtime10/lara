@@ -66,13 +66,19 @@ Route::prefix('admin')
 
             try {
                 $client = \OpenAI::client($apiKey);
-                $client->chat()->create([
-                    'model' => (string) config('services.openai.model', 'gpt-4o-mini'),
-                    'max_tokens' => 8,
+                $model = (string) config('services.openai.model');
+                $payload = [
+                    'model' => $model,
                     'messages' => [
                         ['role' => 'user', 'content' => 'Ответь только OK'],
                     ],
-                ]);
+                ];
+                if (preg_match('/^gpt-5/i', $model) === 1) {
+                    $payload['max_completion_tokens'] = 8;
+                } else {
+                    $payload['max_tokens'] = 8;
+                }
+                $client->chat()->create($payload);
 
                 return response()->json([
                     'ok' => true,
@@ -173,13 +179,19 @@ Route::prefix('admin')
                 // 2. Создаем клиент
                 $client = OpenAI::client($apiKey);
 
-                // 3. Делаем простой запрос к дешевой модели mini
-                $result = $client->chat()->create([
-                    'model' => 'gpt-4o-mini',
+                $model = (string) config('services.openai.model');
+                $payload = [
+                    'model' => $model,
                     'messages' => [
                         ['role' => 'user', 'content' => 'Привет! Это Дима из Одессы. Если ты меня слышишь, ответь: "Конвейер запущен!"'],
                     ],
-                ]);
+                ];
+                if (preg_match('/^gpt-5/i', $model) === 1) {
+                    $payload['max_completion_tokens'] = 64;
+                } else {
+                    $payload['max_tokens'] = 64;
+                }
+                $result = $client->chat()->create($payload);
 
                 // 4. Выводим ответ на экран
                 return "<h1>Ответ от ИИ:</h1><p>" . $result->choices[0]->message->content . "</p>";

@@ -43,7 +43,7 @@ return [
         'key' => env('OPENAI_API_KEY'),
         /** Список ключей через запятую (ротация); дублирует OPENAI_API_KEYS для config:cache. */
         'keys_csv' => env('OPENAI_API_KEYS', ''),
-        'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
+        'model' => env('OPENAI_MODEL', 'gpt-5.4'),
         'max_output_tokens' => (int) env('OPENAI_MAX_OUTPUT_TOKENS', 16384),
         'ai_article_min_chars' => (int) env('OPENAI_AI_ARTICLE_MIN_CHARS', 2500),
         'rate_limit_retries' => (int) env('OPENAI_RATE_LIMIT_RETRIES', 8),

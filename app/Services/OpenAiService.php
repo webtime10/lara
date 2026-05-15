@@ -8,6 +8,7 @@ use OpenAI\Client;
 use OpenAI\Exceptions\ErrorException;
 use OpenAI\Exceptions\RateLimitException;
 use OpenAI\Exceptions\UnserializableResponse;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -74,7 +75,7 @@ class OpenAiService
   // "если нет промпта или текста → не вызываем API"
         $this->logPipelineMaterial($logCallSite, $prompt, $sourceText);
 // "логируем, что именно отправляем в AI (для отладки)"
-        $model = (string) config('services.openai.model', 'gpt-4o-mini');
+        $model = $this->resolvedModel();
         $maxOut = (int) config('services.openai.max_output_tokens', 16384);
         $userContent = $prompt."\n\n--- SOURCE TEXT ---\n".$sourceText;
  // "собираем финальный текст: инструкция + разделитель + сырьё"
@@ -82,7 +83,6 @@ class OpenAiService
 
         $payload = [
             'model' => $model,
-            'max_tokens' => $maxOut,
             'messages' => [
                 [
                     'role' => 'system',
@@ -91,10 +91,12 @@ class OpenAiService
                 ['role' => 'user', 'content' => $userContent],
             ],
         ];
+        $outputLimitKey = $this->applyOutputTokenLimit($payload, $maxOut);
  // "формируем запрос в формате Chat API"
         Log::info('[OpenAiService] askOpenAi request', [
             'model' => $model,
-            'max_tokens' => $maxOut,
+            'output_limit_key' => $outputLimitKey,
+            'output_limit' => $maxOut,
             'prompt_len' => mb_strlen($prompt),
             'source_len' => mb_strlen($sourceText),
             'keys_available' => count($this->collectApiKeys()),
@@ -303,6 +305,30 @@ class OpenAiService
         }
     }
 //маскирует API-ключ для безопасного логирования
+    private function resolvedModel(): string
+    {
+        $model = trim((string) config('services.openai.model'));
+        if ($model === '') {
+            throw new RuntimeException('Задайте OPENAI_MODEL в .env (config/services.openai.model).');
+        }
+
+        return $model;
+    }
+
+    /**
+     * GPT-5+ в Chat Completions принимает max_completion_tokens, не max_tokens.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function applyOutputTokenLimit(array &$payload, int $maxOut): string
+    {
+        $model = (string) ($payload['model'] ?? '');
+        $key = preg_match('/^gpt-5/i', $model) === 1 ? 'max_completion_tokens' : 'max_tokens';
+        $payload[$key] = $maxOut;
+
+        return $key;
+    }
+
     private function maskKeyForLog(string $apiKey): string
     {
         $t = trim($apiKey);
